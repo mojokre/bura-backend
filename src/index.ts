@@ -1,7 +1,7 @@
 import cors from "cors";
 import express from "express";
 import { createServer } from "http";
-import { env, isOriginAllowed } from "./config/env.js";
+import { env } from "./config/env.js";
 import { initRealtime } from "./realtime/gateway.js";
 import { apiRouter } from "./routes/index.js";
 
@@ -10,13 +10,7 @@ const httpServer = createServer(app);
 
 app.use(
   cors({
-    origin(origin, callback) {
-      if (isOriginAllowed(origin)) {
-        callback(null, true);
-        return;
-      }
-      callback(new Error(`CORS blocked origin: ${origin}`));
-    },
+    origin: true,
     credentials: true,
   }),
 );
