@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { z } from "zod";
+import { readPort } from "../port.js";
 
 /** Railway/Vercel sometimes store values with surrounding quotes. */
 function cleanEnv(value: string | undefined): string | undefined {
@@ -24,17 +25,10 @@ function normalizeUrl(value: string | undefined, fallback: string): string {
 }
 
 /** Railway injects PORT at runtime — always trust it over any default. */
-export function readPort(): number {
-  const raw = process.env.PORT;
-  if (raw != null && raw !== "") {
-    const n = Number(String(raw).trim());
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-  return 4000;
-}
+export { readPort } from "../port.js";
 
 const envInput = {
-  NODE_ENV: cleanEnv(process.env.NODE_ENV),
+  NODE_ENV: cleanEnv(process.env.NODE_ENV)?.toLowerCase(),
   FRONTEND_URL: normalizeUrl(
     process.env.FRONTEND_URL,
     "http://localhost:3000",
@@ -89,7 +83,7 @@ if (!parsed.success) {
   console.error(
     "\nSet them in Railway → Service → Variables (no quotes around values).",
   );
-  process.exit(1);
+  throw new Error("Invalid environment variables");
 }
 
 const data = parsed.data;
