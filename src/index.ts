@@ -1,14 +1,17 @@
 import express from "express";
 import { createServer } from "http";
+import { applyCors } from "./cors.js";
 import { readPort } from "./port.js";
 
 const app = express();
+applyCors(app);
+
 const httpServer = createServer(app);
 const port = readPort();
 
 // Health must work before env validation / Supabase imports.
-app.get(["/api/health", "/health"], (_req, res) => {
-  res.status(200).json({ ok: true });
+app.get(["/api/health", "/health", "/"], (_req, res) => {
+  res.status(200).json({ ok: true, service: "bura-backend" });
 });
 
 httpServer.listen(port, "0.0.0.0", () => {

@@ -5,27 +5,6 @@ import { initRealtime } from "./realtime/gateway.js";
 import { apiRouter } from "./routes/index.js";
 
 export function mountApp(app: Express, httpServer: HttpServer) {
-  app.use((req, res, next) => {
-    const origin = req.headers.origin;
-    res.header("Access-Control-Allow-Origin", origin ?? "*");
-    res.header("Vary", "Origin");
-    res.header("Access-Control-Allow-Credentials", "true");
-    res.header(
-      "Access-Control-Allow-Methods",
-      "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-    );
-    res.header(
-      "Access-Control-Allow-Headers",
-      req.headers["access-control-request-headers"]?.toString() ??
-        "Content-Type, Authorization",
-    );
-    if (req.method === "OPTIONS") {
-      res.sendStatus(204);
-      return;
-    }
-    next();
-  });
-
   app.use(express.json({ limit: "32kb" }));
   app.use("/api", apiRouter);
 
