@@ -1,6 +1,33 @@
 import "dotenv/config";
 import { z } from "zod";
 
+/** Railway/Vercel sometimes store values with surrounding quotes. */
+function cleanEnv(value: string | undefined): string | undefined {
+  if (value == null) return value;
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+const envInput = {
+  PORT: cleanEnv(process.env.PORT),
+  NODE_ENV: cleanEnv(process.env.NODE_ENV),
+  FRONTEND_URL: cleanEnv(process.env.FRONTEND_URL),
+  CORS_ORIGINS: cleanEnv(process.env.CORS_ORIGINS),
+  SUPABASE_URL: cleanEnv(process.env.SUPABASE_URL),
+  SUPABASE_ANON_KEY: cleanEnv(process.env.SUPABASE_ANON_KEY),
+  SUPABASE_SERVICE_ROLE_KEY: cleanEnv(process.env.SUPABASE_SERVICE_ROLE_KEY),
+  SUPABASE_STORAGE_BUCKET: cleanEnv(process.env.SUPABASE_STORAGE_BUCKET),
+  SUPABASE_PROFILE_ICONS_PREFIX: cleanEnv(
+    process.env.SUPABASE_PROFILE_ICONS_PREFIX,
+  ),
+};
+
 const envSchema = z.object({
   PORT: z.coerce.number().default(4000),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
@@ -21,7 +48,7 @@ const envSchema = z.object({
   SUPABASE_PROFILE_ICONS_PREFIX: z.string().default(""),
 });
 
-const parsed = envSchema.safeParse(process.env);
+const parsed = envSchema.safeParse(envInput);
 
 if (!parsed.success) {
   const details = parsed.error.issues

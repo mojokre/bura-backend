@@ -1,6 +1,5 @@
 import { Server as HttpServer } from "http";
 import { Server, type Socket } from "socket.io";
-import { isOriginAllowed } from "../config/env.js";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { markUserActive } from "../services/presence.service.js";
 import { getUserGameRoomId, getUsersInGameRoom } from "../services/tables.service.js";
@@ -16,13 +15,7 @@ const voiceRoomBySocket = new Map<string, string>();
 export function initRealtime(httpServer: HttpServer) {
   io = new Server(httpServer, {
     cors: {
-      origin(origin, callback) {
-        if (isOriginAllowed(origin)) {
-          callback(null, true);
-          return;
-        }
-        callback(new Error(`CORS blocked origin: ${origin}`), false);
-      },
+      origin: true,
       credentials: true,
     },
   });

@@ -46,6 +46,5 @@ initRealtime(httpServer);
 // 0.0.0.0 = reachable from phone / LAN, not only localhost
 httpServer.listen(env.PORT, "0.0.0.0", () => {
   console.log(`Backend listening on http://0.0.0.0:${env.PORT}`);
-  console.log(`CORS allowed: ${env.ALLOWED_ORIGINS.join(", ")}`);
-  console.log(`Dev: private LAN origins on :3000 are also allowed`);
+  console.log(`Health: GET /api/health`);
 });
