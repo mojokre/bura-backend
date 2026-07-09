@@ -14,10 +14,31 @@ function cleanEnv(value: string | undefined): string | undefined {
   return trimmed;
 }
 
+function normalizeUrl(value: string | undefined, fallback: string): string {
+  const cleaned = cleanEnv(value);
+  if (!cleaned) return fallback;
+  if (cleaned.startsWith("http://") || cleaned.startsWith("https://")) {
+    return cleaned;
+  }
+  return `https://${cleaned}`;
+}
+
+/** Railway injects PORT at runtime — always trust it over any default. */
+export function readPort(): number {
+  const raw = process.env.PORT;
+  if (raw != null && raw !== "") {
+    const n = Number(String(raw).trim());
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 4000;
+}
+
 const envInput = {
-  PORT: cleanEnv(process.env.PORT),
   NODE_ENV: cleanEnv(process.env.NODE_ENV),
-  FRONTEND_URL: cleanEnv(process.env.FRONTEND_URL),
+  FRONTEND_URL: normalizeUrl(
+    process.env.FRONTEND_URL,
+    "http://localhost:3000",
+  ),
   CORS_ORIGINS: cleanEnv(process.env.CORS_ORIGINS),
   SUPABASE_URL: cleanEnv(process.env.SUPABASE_URL),
   SUPABASE_ANON_KEY: cleanEnv(process.env.SUPABASE_ANON_KEY),
@@ -29,9 +50,8 @@ const envInput = {
 };
 
 const envSchema = z.object({
-  PORT: z.coerce.number().default(4000),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
-  FRONTEND_URL: z.string().url().default("http://localhost:3000"),
+  FRONTEND_URL: z.string().url(),
   /** Comma-separated extra Origins (e.g. phone LAN URL). */
   CORS_ORIGINS: z.string().optional(),
   SUPABASE_URL: z.string().url("SUPABASE_URL is required"),
@@ -55,9 +75,19 @@ if (!parsed.success) {
     .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
     .join("\n");
 
+  const missing = [
+    !cleanEnv(process.env.SUPABASE_URL) && "SUPABASE_URL",
+    !cleanEnv(process.env.SUPABASE_ANON_KEY) && "SUPABASE_ANON_KEY",
+    !cleanEnv(process.env.SUPABASE_SERVICE_ROLE_KEY) &&
+      "SUPABASE_SERVICE_ROLE_KEY",
+  ].filter(Boolean);
+
   console.error("Invalid environment variables:\n" + details);
+  if (missing.length > 0) {
+    console.error("\nMissing required Railway variables:\n" + missing.join("\n"));
+  }
   console.error(
-    "\nCopy backend/.env.example to backend/.env and paste your Supabase keys.",
+    "\nSet them in Railway → Service → Variables (no quotes around values).",
   );
   process.exit(1);
 }
@@ -81,6 +111,7 @@ function buildAllowedOrigins(): string[] {
 
 export const env = {
   ...data,
+  PORT: readPort(),
   ALLOWED_ORIGINS: buildAllowedOrigins(),
 };
 
