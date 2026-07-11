@@ -16,7 +16,7 @@ import { supabaseAdmin } from "../lib/supabase.js";
 export const tablesRouter = Router();
 
 const gameQuerySchema = z.object({
-  game: z.enum(["bura", "joker"]),
+  game: z.literal("bura"),
 });
 
 tablesRouter.get("/public", (req, res) => {
@@ -24,7 +24,7 @@ tablesRouter.get("/public", (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({
       code: "VALIDATION_ERROR",
-      message: "game უნდა იყოს bura ან joker.",
+      message: "game უნდა იყოს bura.",
     });
   }
 

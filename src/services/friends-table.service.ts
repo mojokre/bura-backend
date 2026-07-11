@@ -49,7 +49,7 @@ const MAX_PLAYERS = 4;
 const INVITE_COUNT = 3;
 
 const createSchema = z.object({
-  game: z.enum(["bura", "joker"]),
+  game: z.literal("bura"),
   friendIds: z.array(z.string().uuid()).length(INVITE_COUNT),
 });
 

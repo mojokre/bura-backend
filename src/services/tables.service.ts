@@ -9,7 +9,7 @@ import {
   getBuraLiveRoom,
 } from "./bura-room.service.js";
 
-export type GameType = "bura" | "joker";
+export type GameType = "bura";
 
 export type PublicTable = {
   id: string;
@@ -30,17 +30,10 @@ const tableTemplates: Array<{
   label: string;
   maxPlayers: number;
 }> = [
-  // Bura tables
   { id: "bura-1", game: "bura", label: "ბურა • მაგიდა 1", maxPlayers: 4 },
   { id: "bura-2", game: "bura", label: "ბურა • მაგიდა 2", maxPlayers: 4 },
   { id: "bura-3", game: "bura", label: "ბურა • მაგიდა 3", maxPlayers: 4 },
   { id: "bura-4", game: "bura", label: "ბურა • მაგიდა 4", maxPlayers: 4 },
-
-  // Joker tables
-  { id: "joker-1", game: "joker", label: "ჯოკერი • მაგიდა 1", maxPlayers: 4 },
-  { id: "joker-2", game: "joker", label: "ჯოკერი • მაგიდა 2", maxPlayers: 4 },
-  { id: "joker-3", game: "joker", label: "ჯოკერი • მაგიდა 3", maxPlayers: 4 },
-  { id: "joker-4", game: "joker", label: "ჯოკერი • მაგიდა 4", maxPlayers: 4 },
 ];
 
 const joinParamsSchema = z.object({
@@ -282,6 +275,28 @@ export function leaveGameRoom(userId: string) {
     memberIds,
     leftUserId: userId,
   };
+}
+
+/**
+ * Match finished normally (11+ points): free all members without the
+ * "player left" notification so their statuses return to normal.
+ */
+export function dissolveFinishedGameRoom(roomId: string) {
+  const room = rooms.get(roomId);
+  const memberIds = getUsersInGameRoom(roomId);
+
+  for (const memberId of memberIds) {
+    currentRoomByUser.delete(memberId);
+  }
+
+  if (room) {
+    tableMembers.delete(room.tableId);
+    rooms.delete(roomId);
+    notifyTablesUpdated(room.game);
+  }
+
+  destroyBuraLiveRoom(roomId);
+  emitBroadcast("presence:updated", {});
 }
 
 export function isUserInPublicTable(userId: string) {

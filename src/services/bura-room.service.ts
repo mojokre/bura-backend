@@ -23,9 +23,12 @@ import type {
 import { teamOf } from "../game/bura/types.js";
 
 const TURN_MS = 60_000;
-const SETTLE_MS = 1_900;
+/** Reveal (1.5s) + gather + flip + fly animation on the client. */
+const SETTLE_MS = 3_200;
 /** Time to show round result before next deal (~3s + countdown). */
 const BETWEEN_DEALS_MS = 3_500;
+/** After match end: winner overlay + 3-2-1 countdown on clients, then free everyone. */
+const MATCH_END_CLEANUP_MS = 7_000;
 
 type RoomPlayer = {
   userId: string;
@@ -36,7 +39,7 @@ type RoomPlayer = {
 
 type LiveRoom = {
   roomId: string;
-  game: "bura" | "joker";
+  game: "bura";
   players: RoomPlayer[];
   match: BuraMatchState;
   turnDeadline: number | null;
@@ -44,6 +47,7 @@ type LiveRoom = {
   nextDealAt: number | null;
   turnTimer: ReturnType<typeof setTimeout> | null;
   settleTimer: ReturnType<typeof setTimeout> | null;
+  finishTimer: ReturnType<typeof setTimeout> | null;
 };
 
 const rooms = new Map<string, LiveRoom>();
@@ -217,7 +221,28 @@ function viewerPayload(room: LiveRoom, userId: string) {
   };
 }
 
+/**
+ * Match reached 11 points: give clients time for the winner overlay +
+ * countdown, then dissolve the room so presence/statuses go back to normal.
+ */
+function maybeScheduleMatchCleanup(room: LiveRoom) {
+  if (room.match.status !== "finished" || room.finishTimer) return;
+  clearTurnTimer(room);
+  clearSettleTimer(room);
+  room.finishTimer = setTimeout(() => {
+    void (async () => {
+      try {
+        const { dissolveFinishedGameRoom } = await import("./tables.service.js");
+        dissolveFinishedGameRoom(room.roomId);
+      } catch {
+        // ignore
+      }
+    })();
+  }, MATCH_END_CLEANUP_MS);
+}
+
 function broadcastRoom(room: LiveRoom) {
+  maybeScheduleMatchCleanup(room);
   for (const player of room.players) {
     emitToUser(player.userId, "bura:state", viewerPayload(room, player.userId));
   }
@@ -225,12 +250,9 @@ function broadcastRoom(room: LiveRoom) {
 
 export async function createBuraLiveRoom(input: {
   roomId: string;
-  game: "bura" | "joker";
+  game: "bura";
   userIds: string[];
 }) {
-  if (input.game !== "bura") {
-    // For now only Bura engine is ready — still register room shell.
-  }
   if (input.userIds.length !== 4) {
     throw new AppError(400, "NEED_4", "სჭირდება 4 მოთამაშე.");
   }
@@ -254,10 +276,7 @@ export async function createBuraLiveRoom(input: {
     seat: index as SeatIndex,
   }));
 
-  let match = createMatch(input.roomId, seats);
-  if (input.game === "bura") {
-    match = startDeal(match);
-  }
+  const match = startDeal(createMatch(input.roomId, seats));
 
   const room: LiveRoom = {
     roomId: input.roomId,
@@ -268,6 +287,7 @@ export async function createBuraLiveRoom(input: {
     nextDealAt: null,
     turnTimer: null,
     settleTimer: null,
+    finishTimer: null,
   };
   rooms.set(input.roomId, room);
 
@@ -400,6 +420,10 @@ export function destroyBuraLiveRoom(roomId: string) {
   if (!room) return;
   clearTurnTimer(room);
   clearSettleTimer(room);
+  if (room.finishTimer) {
+    clearTimeout(room.finishTimer);
+    room.finishTimer = null;
+  }
   rooms.delete(roomId);
 }
 
