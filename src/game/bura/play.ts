@@ -139,9 +139,13 @@ export function playCards(
     throw new Error("ჯერ შეთავაზებას უპასუხე.");
   }
 
-  // მალიუტკა: play all 5 same-suit — return earlier plays, this seat takes the trick.
+  // მალიუტკა: play all 5 same-suit — earlier plays return to their owners and
+  // the 5 cards become the lead. It does NOT auto-win: everyone must respond
+  // with their full hand and the malyutka can be cut like any lead.
   // (5 trump is ბურა and already ended the deal on deal/refill.)
-  if (isMalyutkaPlay(deal.hands[fromSeat], cards)) {
+  // A 5-card play answering an existing 5-card lead is a normal response.
+  const leadCardCount = deal.currentTrick[0]?.cards.length ?? 0;
+  if (leadCardCount !== 5 && isMalyutkaPlay(deal.hands[fromSeat], cards)) {
     const returnedTrick = [...deal.currentTrick];
     const hands: Record<SeatIndex, Card[]> = {
       0: [...deal.hands[0]],
@@ -155,7 +159,6 @@ export function playCards(
     }
     hands[fromSeat] = hand; // emptied (all 5 played)
 
-    const winnerTeam = teamOf(fromSeat);
     return {
       ...match,
       deal: {
@@ -163,14 +166,10 @@ export function playCards(
         hands,
         currentTrick: [{ seat: fromSeat, cards }],
         leadSeat: fromSeat,
-        turnSeat: fromSeat,
+        turnSeat: nextSeat(fromSeat),
         winningSeat: fromSeat,
-        pendingSettle: true,
-        lastResolved: {
-          trick: [{ seat: fromSeat, cards }],
-          winnerSeat: fromSeat,
-          winnerTeam,
-        },
+        pendingSettle: false,
+        lastResolved: null,
       },
     };
   }
