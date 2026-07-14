@@ -3,8 +3,8 @@ import { z } from "zod";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { AppError } from "../lib/errors.js";
 import {
+  getActiveLiveGameRoomId,
   getPublicTables,
-  getUserGameRoomId,
   joinPublicTable,
   leaveGameRoom,
   leavePublicTable,
@@ -34,7 +34,8 @@ tablesRouter.get("/public", (req, res) => {
 
 tablesRouter.get("/active-game", requireAuth, (req, res) => {
   const userId = (req as any).userId as string;
-  const roomId = getUserGameRoomId(userId);
+  // Only report rooms with a started live match — not public-table lobby seats.
+  const roomId = getActiveLiveGameRoomId(userId);
   return res.json({ roomId });
 });
 

@@ -311,3 +311,14 @@ export function getUserGameRoomId(userId: string) {
   return currentRoomByUser.get(userId) ?? null;
 }
 
+/**
+ * Room id only when a live Bura match is running.
+ * Lobby seats also get a roomId early — those must NOT trigger /table redirects
+ * or clients hit ROOM_NOT_FOUND before the table is full.
+ */
+export function getActiveLiveGameRoomId(userId: string) {
+  const roomId = currentRoomByUser.get(userId);
+  if (!roomId) return null;
+  return getBuraLiveRoom(roomId) ? roomId : null;
+}
+
