@@ -239,6 +239,7 @@ function maybeScheduleMatchCleanup(room: LiveRoom) {
     const winnerUserIds = room.players
       .filter((p) => teamOf(p.seat) === resolvedTeam)
       .map((p) => p.userId);
+    const allUserIds = room.players.map((p) => p.userId);
     void import("./leaderboard.service.js")
       .then(({ awardMatchWin }) =>
         awardMatchWin({
@@ -247,6 +248,10 @@ function maybeScheduleMatchCleanup(room: LiveRoom) {
           winnerUserIds,
         }),
       )
+      .catch(() => {});
+    // Every player owes a post-match interstitial (refresh / other browser still blocked).
+    void import("./ads.service.js")
+      .then(({ markPendingAdsForUsers }) => markPendingAdsForUsers(allUserIds))
       .catch(() => {});
   }
 

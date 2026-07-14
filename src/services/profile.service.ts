@@ -8,13 +8,14 @@ type ProfileRow = {
   id: string;
   username: string;
   icon_path?: string | null;
+  pending_ad_after_match?: boolean | null;
   created_at: string;
 };
 
 export async function getMe(userId: string) {
   const withIcon = await supabaseAdmin
     .from("profiles")
-    .select("id, username, icon_path, created_at")
+    .select("id, username, icon_path, pending_ad_after_match, created_at")
     .eq("id", userId)
     .single<ProfileRow>();
 
@@ -22,7 +23,10 @@ export async function getMe(userId: string) {
 
   if (!withIcon.error && withIcon.data) {
     profile = withIcon.data;
-  } else if (withIcon.error && /icon_path/i.test(withIcon.error.message)) {
+  } else if (
+    withIcon.error &&
+    /icon_path|pending_ad_after_match/i.test(withIcon.error.message)
+  ) {
     const fallback = await supabaseAdmin
       .from("profiles")
       .select("id, username, created_at")
@@ -30,7 +34,11 @@ export async function getMe(userId: string) {
       .single<ProfileRow>();
 
     if (!fallback.error && fallback.data) {
-      profile = { ...fallback.data, icon_path: null };
+      profile = {
+        ...fallback.data,
+        icon_path: null,
+        pending_ad_after_match: false,
+      };
     }
   }
 
@@ -46,6 +54,7 @@ export async function getMe(userId: string) {
       ? await resolveIconUrl(profile.icon_path)
       : getDefaultProfileIconUrl(profile.username),
     canSetIcon: false,
+    pendingAdAfterMatch: Boolean(profile.pending_ad_after_match),
     createdAt: profile.created_at,
   };
 }

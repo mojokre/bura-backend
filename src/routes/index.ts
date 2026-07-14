@@ -6,6 +6,7 @@ import { friendsTableRouter } from "./friends-table.routes.js";
 import { profileRouter } from "./profile.routes.js";
 import { tablesRouter } from "./tables.routes.js";
 import { leaderboardRouter } from "./leaderboard.routes.js";
+import { adsRouter } from "./ads.routes.js";
 
 export const apiRouter = Router();
 
@@ -20,3 +21,4 @@ apiRouter.use("/friends-table", friendsTableRouter);
 apiRouter.use("/friends", friendsRouter);
 apiRouter.use("/bura", buraRouter);
 apiRouter.use("/leaderboard", leaderboardRouter);
+apiRouter.use("/ads", adsRouter);
