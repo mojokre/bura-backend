@@ -447,6 +447,46 @@ export async function joinFriendsTableTeam(
   return serializeLobby(lobby);
 }
 
+export function leavePrivateLobbyIfAny(userId: string) {
+  const lobbyId = privateLobbyByUser.get(userId);
+  if (!lobbyId) return;
+  const lobby = privateLobbies.get(lobbyId);
+  if (!lobby || lobby.status === "started") return;
+
+  const seat = lobby.seats.get(userId);
+  if (!seat) {
+    clearUserPrivateLobby(userId);
+    return;
+  }
+
+  if (lobby.hostId === userId) {
+    for (const member of lobby.seats.values()) {
+      emitToUser(member.id, "friends-table:cancelled", {
+        lobbyId,
+        message: "ჰოსტმა გააუქმა მაგიდა",
+      });
+    }
+    destroyLobby(lobbyId);
+    emitBroadcast("presence:updated", {});
+    return;
+  }
+
+  lobby.seats.delete(userId);
+  clearUserPrivateLobby(userId);
+  refreshLobbyStatus(lobby);
+  emitLobbyToMembers(lobby, "friends-table:updated", {
+    message: `${seat.username} გავიდა ლობიდან`,
+  });
+  if (acceptedCount(lobby) <= 1) {
+    emitLobbyToMembers(lobby, "friends-table:cancelled", {
+      lobbyId,
+      message: "ლობი დაიხურა",
+    });
+    destroyLobby(lobbyId);
+  }
+  emitBroadcast("presence:updated", {});
+}
+
 export async function leaveFriendsTable(userId: string, lobbyId: string) {
   const lobby = privateLobbies.get(lobbyId);
   if (!lobby) {

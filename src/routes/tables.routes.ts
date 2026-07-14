@@ -43,12 +43,6 @@ tablesRouter.get("/active-game", requireAuth, (req, res) => {
 tablesRouter.post("/public/create", requireAuth, async (req, res) => {
   try {
     const userId = (req as any).userId as string;
-    if (isUserInPrivateLobby(userId)) {
-      return res.status(409).json({
-        code: "IN_PRIVATE_LOBBY",
-        message: "ჯერ დატოვე მეგობრების ლობი.",
-      });
-    }
     const result = await createPublicTable(userId, req.body);
     return res.json(result);
   } catch (error) {

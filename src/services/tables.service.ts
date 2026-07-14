@@ -160,8 +160,25 @@ export async function createPublicTable(userId: string, body: unknown) {
     );
   }
 
-  if (currentRoomByUser.has(userId)) {
-    throw new AppError(409, "ALREADY_IN_TABLE", "უკვე ხარ მაგიდაზე.");
+  // Anyone can create — leave waiting seats first. Block only mid-match.
+  const existingRoomId = currentRoomByUser.get(userId);
+  if (existingRoomId && getBuraLiveRoom(existingRoomId)) {
+    throw new AppError(
+      409,
+      "ALREADY_IN_GAME",
+      "ჯერ დაასრულე მიმდინარე თამაში.",
+    );
+  }
+  if (existingRoomId) {
+    leaveCurrentTable(userId);
+  }
+
+  // Soft-leave friends lobby if sitting there (exported helper avoids circular import issues).
+  try {
+    const { leavePrivateLobbyIfAny } = await import("./friends-table.service.js");
+    leavePrivateLobbyIfAny(userId);
+  } catch {
+    // ignore
   }
 
   const user = await resolveUser(userId);
