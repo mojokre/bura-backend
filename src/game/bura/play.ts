@@ -110,6 +110,52 @@ export function isMalyutkaPlay(hand: Card[], cards: Card[]): boolean {
   return hand.length === 5 && cards.length === 5 && cards.every((c) => c.suit === cards[0]!.suit);
 }
 
+export function isMalyutkaHand(hand: Card[], trump: Suit): boolean {
+  return (
+    hand.length === 5 &&
+    hand.every((c) => c.suit === hand[0]!.suit) &&
+    hand[0]!.suit !== trump
+  );
+}
+
+export function isBuraHand(hand: Card[], trump: Suit): boolean {
+  return hand.length === 5 && hand.every((c) => c.suit === trump);
+}
+
+function applyMalyutkaLead(
+  match: BuraMatchState,
+  deal: NonNullable<BuraMatchState["deal"]>,
+  fromSeat: SeatIndex,
+  handAfterPlay: Card[],
+  cards: Card[],
+): BuraMatchState {
+  const returnedTrick = [...deal.currentTrick];
+  const hands: Record<SeatIndex, Card[]> = {
+    0: [...deal.hands[0]],
+    1: [...deal.hands[1]],
+    2: [...deal.hands[2]],
+    3: [...deal.hands[3]],
+  };
+  for (const play of returnedTrick) {
+    hands[play.seat] = [...hands[play.seat], ...play.cards];
+  }
+  hands[fromSeat] = handAfterPlay;
+
+  return {
+    ...match,
+    deal: {
+      ...deal,
+      hands,
+      currentTrick: [{ seat: fromSeat, cards }],
+      leadSeat: fromSeat,
+      turnSeat: nextSeat(fromSeat),
+      winningSeat: fromSeat,
+      pendingSettle: false,
+      lastResolved: null,
+    },
+  };
+}
+
 export function playCards(
   match: BuraMatchState,
   fromSeat: SeatIndex,
@@ -121,9 +167,6 @@ export function playCards(
   const deal = match.deal;
   if (deal.pendingSettle) {
     throw new Error("ცოტა დაიცადე — კარტები იღება.");
-  }
-  if (deal.turnSeat !== fromSeat) {
-    throw new Error("შენი სვლა არაა.");
   }
 
   const hand = [...deal.hands[fromSeat]];
@@ -139,39 +182,38 @@ export function playCards(
     throw new Error("ჯერ შეთავაზებას უპასუხე.");
   }
 
-  // მალიუტკა: play all 5 same-suit — earlier plays return to their owners and
-  // the 5 cards become the lead. It does NOT auto-win: everyone must respond
-  // with their full hand and the malyutka can be cut like any lead.
-  // (5 trump is ბურა and already ended the deal on deal/refill.)
-  // A 5-card play answering an existing 5-card lead is a normal response.
+  const mode = match.config.malyutkaMode;
   const leadCardCount = deal.currentTrick[0]?.cards.length ?? 0;
-  if (leadCardCount !== 5 && isMalyutkaPlay(deal.hands[fromSeat], cards)) {
-    const returnedTrick = [...deal.currentTrick];
-    const hands: Record<SeatIndex, Card[]> = {
-      0: [...deal.hands[0]],
-      1: [...deal.hands[1]],
-      2: [...deal.hands[2]],
-      3: [...deal.hands[3]],
-    };
-    // Return cards already on the table to their owners.
-    for (const play of returnedTrick) {
-      hands[play.seat] = [...hands[play.seat], ...play.cards];
-    }
-    hands[fromSeat] = hand; // emptied (all 5 played)
+  const isMyTurn = deal.turnSeat === fromSeat;
+  const wantsMalyutka =
+    leadCardCount !== 5 && isMalyutkaPlay(deal.hands[fromSeat], cards);
 
-    return {
-      ...match,
-      deal: {
-        ...deal,
-        hands,
-        currentTrick: [{ seat: fromSeat, cards }],
-        leadSeat: fromSeat,
-        turnSeat: nextSeat(fromSeat),
-        winningSeat: fromSeat,
-        pendingSettle: false,
-        lastResolved: null,
-      },
-    };
+  if (wantsMalyutka) {
+    // 5 trump is ბურა — handled separately; reject as malyutka.
+    if (cards.every((c) => c.suit === deal.trump)) {
+      throw new Error("5 კოზირი ბურაა — არა მალიუტკა.");
+    }
+
+    if (mode === "turn") {
+      // რიგით: only when you are leading (empty table + your turn).
+      if (!isMyTurn || deal.currentTrick.length > 0) {
+        throw new Error("რიგით მალიუტკა მხოლოდ შენს ლიდზე.");
+      }
+      return applyMalyutkaLead(match, deal, fromSeat, hand, cards);
+    }
+
+    // ურიგოდ: your turn (lead or mid-trick), OR off-turn after someone played.
+    if (isMyTurn) {
+      return applyMalyutkaLead(match, deal, fromSeat, hand, cards);
+    }
+    if (deal.currentTrick.length > 0) {
+      return applyMalyutkaLead(match, deal, fromSeat, hand, cards);
+    }
+    throw new Error("ურიგოდ მალიუტკა — დაელოდე სანამ სხვები ჩამოვლენ.");
+  }
+
+  if (!isMyTurn) {
+    throw new Error("შენი სვლა არაა.");
   }
 
   const isLead = deal.currentTrick.length === 0;

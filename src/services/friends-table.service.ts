@@ -10,6 +10,10 @@ import {
   registerUsersInGameRoom,
 } from "./tables.service.js";
 import { createBuraLiveRoom } from "./bura-room.service.js";
+import {
+  tableRulesSchema,
+  type MalyutkaMode,
+} from "../game/bura/table-rules.js";
 
 export type PrivateSeatStatus = "pending" | "accepted" | "rejected";
 
@@ -32,6 +36,8 @@ export type PrivateLobby = {
   seats: PrivateSeat[];
   roomId: string | null;
   createdAt: number;
+  malyutkaMode: MalyutkaMode;
+  matchTo: number;
 };
 
 type PrivateLobbyInternal = {
@@ -43,6 +49,8 @@ type PrivateLobbyInternal = {
   seats: Map<string, PrivateSeat>;
   roomId: string | null;
   createdAt: number;
+  malyutkaMode: MalyutkaMode;
+  matchTo: number;
 };
 
 const MAX_PLAYERS = 4;
@@ -51,6 +59,8 @@ const INVITE_COUNT = 3;
 const createSchema = z.object({
   game: z.literal("bura"),
   friendIds: z.array(z.string().uuid()).length(INVITE_COUNT),
+  malyutkaMode: tableRulesSchema.shape.malyutkaMode,
+  matchTo: tableRulesSchema.shape.matchTo,
 });
 
 const joinTeamSchema = z.object({
@@ -118,6 +128,8 @@ function serializeLobby(lobby: PrivateLobbyInternal): PrivateLobby {
     seats,
     roomId: lobby.roomId,
     createdAt: lobby.createdAt,
+    malyutkaMode: lobby.malyutkaMode,
+    matchTo: lobby.matchTo,
   };
 }
 
@@ -171,11 +183,11 @@ export async function createFriendsTable(hostId: string, body: unknown) {
     throw new AppError(
       400,
       "VALIDATION_ERROR",
-      `ზუსტად ${INVITE_COUNT} მეგობარი უნდა მოიწვიო (სულ ${MAX_PLAYERS} მოთამაშე).`,
+      `მალიუტკა რეჟიმი, ქულა (3–11) და ზუსტად ${INVITE_COUNT} მეგობარი სავალდებულოა.`,
     );
   }
 
-  const { game, friendIds } = parsed.data;
+  const { game, friendIds, malyutkaMode, matchTo } = parsed.data;
   const uniqueFriends = new Set(friendIds);
   if (uniqueFriends.size !== INVITE_COUNT) {
     throw new AppError(400, "DUPLICATE_INVITES", "მეგობრები არ უნდა გამეორდეს.");
@@ -227,6 +239,8 @@ export async function createFriendsTable(hostId: string, body: unknown) {
     seats,
     roomId: null,
     createdAt: Date.now(),
+    malyutkaMode,
+    matchTo,
   };
 
   privateLobbies.set(lobbyId, lobby);
@@ -372,6 +386,8 @@ export async function startFriendsTable(userId: string, lobbyId: string) {
       roomId,
       game: "bura",
       userIds: acceptedIds,
+      matchTo: lobby.matchTo,
+      malyutkaMode: lobby.malyutkaMode,
     });
   }
 

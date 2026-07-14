@@ -23,6 +23,7 @@ import {
 const DEFAULT_CONFIG: BuraMatchConfig = {
   matchTo: 11,
   handSize: 5,
+  malyutkaMode: "turn",
 };
 
 function cryptoSeat(): SeatIndex {
@@ -406,7 +407,11 @@ export function respondRaise(
   };
 }
 
-export function publicDealView(deal: BuraDealState, viewerSeat: SeatIndex) {
+export function publicDealView(
+  deal: BuraDealState,
+  viewerSeat: SeatIndex,
+  malyutkaMode: "turn" | "anytime" = "turn",
+) {
   const trumpStillInStock = deal.deckRemaining.some(
     (c) => c.id === deal.trumpCard.id,
   );
@@ -429,6 +434,31 @@ export function publicDealView(deal: BuraDealState, viewerSeat: SeatIndex) {
   const counterLevel =
     deal.pendingRaise !== null ? nextRaiseLevel(deal.pendingRaise) : null;
 
+  const hand = deal.hands[viewerSeat];
+  const isPlaying =
+    !deal.finished &&
+    !deal.pendingRaise &&
+    !deal.pendingSettle &&
+    deal.endReason === null;
+  const leadCount = deal.currentTrick[0]?.cards.length ?? 0;
+  const myTurn = deal.turnSeat === viewerSeat;
+  const hasMalyutka =
+    hand.length === 5 &&
+    hand.every((c) => c.suit === hand[0]!.suit) &&
+    hand[0]!.suit !== deal.trump;
+  const hasBura =
+    hand.length === 5 && hand.every((c) => c.suit === deal.trump);
+
+  let canOfferMalyutka = false;
+  if (isPlaying && hasMalyutka && leadCount !== 5) {
+    if (malyutkaMode === "turn") {
+      canOfferMalyutka = myTurn && deal.currentTrick.length === 0;
+    } else {
+      canOfferMalyutka =
+        myTurn || deal.currentTrick.length > 0;
+    }
+  }
+
   return {
     trump: deal.trump,
     // Always show face for reference — even after the trump card was dealt from stock.
@@ -442,6 +472,8 @@ export function publicDealView(deal: BuraDealState, viewerSeat: SeatIndex) {
     canOfferRaise: canOffer ? nextLevel : null,
     canRespondRaise: canRespond,
     canCounterRaise: canRespond ? counterLevel : null,
+    canOfferMalyutka,
+    canDeclareBura: isPlaying && hasBura,
     leadSeat: deal.leadSeat,
     turnSeat: deal.turnSeat,
     winningSeat: deal.winningSeat,

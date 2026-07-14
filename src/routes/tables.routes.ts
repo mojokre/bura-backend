@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { AppError } from "../lib/errors.js";
 import {
+  createPublicTable,
   getActiveLiveGameRoomId,
   getPublicTables,
   joinPublicTable,
@@ -37,6 +38,33 @@ tablesRouter.get("/active-game", requireAuth, (req, res) => {
   // Only report rooms with a started live match — not public-table lobby seats.
   const roomId = getActiveLiveGameRoomId(userId);
   return res.json({ roomId });
+});
+
+tablesRouter.post("/public/create", requireAuth, async (req, res) => {
+  try {
+    const userId = (req as any).userId as string;
+    if (isUserInPrivateLobby(userId)) {
+      return res.status(409).json({
+        code: "IN_PRIVATE_LOBBY",
+        message: "ჯერ დატოვე მეგობრების ლობი.",
+      });
+    }
+    const result = await createPublicTable(userId, req.body);
+    return res.json(result);
+  } catch (error) {
+    if (error instanceof AppError) {
+      return res.status(error.statusCode).json({
+        code: error.code,
+        message: error.message,
+      });
+    }
+    // eslint-disable-next-line no-console
+    console.error(error);
+    return res.status(500).json({
+      code: "INTERNAL_ERROR",
+      message: "სერვერის შეცდომა.",
+    });
+  }
 });
 
 tablesRouter.post("/:tableId/join", requireAuth, async (req, res) => {

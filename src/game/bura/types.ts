@@ -22,8 +22,11 @@ export type PlayerSeat = {
 };
 
 export type BuraMatchConfig = {
-  matchTo: 11;
+  /** Match ends when a team reaches this score (3–11). */
+  matchTo: number;
   handSize: 5;
+  /** turn = რიგით (lead only); anytime = ურიგოდ (can interrupt). */
+  malyutkaMode: "turn" | "anytime";
 };
 
 export type TrickPlay = {

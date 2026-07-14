@@ -49,6 +49,8 @@ type LiveRoom = {
   settleTimer: ReturnType<typeof setTimeout> | null;
   finishTimer: ReturnType<typeof setTimeout> | null;
   leaderboardAwarded?: boolean;
+  /** dealNumber for which we already emitted chat "ბურა". */
+  buraChatDeal?: number;
 };
 
 const rooms = new Map<string, LiveRoom>();
@@ -190,7 +192,9 @@ function viewerPayload(room: LiveRoom, userId: string) {
   if (!me) throw new AppError(403, "FORBIDDEN", "ამ ოთახში არ ხარ.");
 
   const deal = room.match.deal;
-  const dealView = deal ? publicDealView(deal, me.seat) : null;
+  const dealView = deal
+    ? publicDealView(deal, me.seat, room.match.config.malyutkaMode)
+    : null;
   const hideTrump = room.match.status === "color_ask";
 
   return {
@@ -202,6 +206,10 @@ function viewerPayload(room: LiveRoom, userId: string) {
     turnDeadline: room.turnDeadline,
     nextDealAt: room.nextDealAt,
     mySeat: me.seat,
+    config: {
+      matchTo: room.match.config.matchTo,
+      malyutkaMode: room.match.config.malyutkaMode,
+    },
     players: room.players.map((p) => ({
       seat: p.seat,
       userId: p.userId,
@@ -267,7 +275,28 @@ function maybeScheduleMatchCleanup(room: LiveRoom) {
   }, MATCH_END_CLEANUP_MS);
 }
 
+function maybeAnnounceBura(room: LiveRoom) {
+  const deal = room.match.deal;
+  if (!deal || deal.endReason !== "bura") return;
+  if (room.buraChatDeal === room.match.dealNumber) return;
+  room.buraChatDeal = room.match.dealNumber;
+  const winnerTeam = deal.winnerTeam;
+  const speaker =
+    room.players.find((p) => teamOf(p.seat) === winnerTeam) ?? room.players[0];
+  if (!speaker) return;
+  const ts = Date.now();
+  for (const p of room.players) {
+    emitToUser(p.userId, "game:chat", {
+      roomId: room.roomId,
+      userId: speaker.userId,
+      text: "ბურა",
+      ts,
+    });
+  }
+}
+
 function broadcastRoom(room: LiveRoom) {
+  maybeAnnounceBura(room);
   maybeScheduleMatchCleanup(room);
   for (const player of room.players) {
     emitToUser(player.userId, "bura:state", viewerPayload(room, player.userId));
@@ -278,6 +307,8 @@ export async function createBuraLiveRoom(input: {
   roomId: string;
   game: "bura";
   userIds: string[];
+  matchTo?: number;
+  malyutkaMode?: "turn" | "anytime";
 }) {
   if (input.userIds.length !== 4) {
     throw new AppError(400, "NEED_4", "სჭირდება 4 მოთამაშე.");
@@ -302,7 +333,12 @@ export async function createBuraLiveRoom(input: {
     seat: index as SeatIndex,
   }));
 
-  const match = startDeal(createMatch(input.roomId, seats));
+  const matchTo = Math.min(11, Math.max(3, input.matchTo ?? 11));
+  const malyutkaMode = input.malyutkaMode === "anytime" ? "anytime" : "turn";
+
+  const match = startDeal(
+    createMatch(input.roomId, seats, { matchTo, malyutkaMode }),
+  );
 
   const room: LiveRoom = {
     roomId: input.roomId,
