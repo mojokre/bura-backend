@@ -13,6 +13,7 @@ import {
 import { isUserInPrivateLobby } from "../services/friends-table.service.js";
 import { emitToUser } from "../realtime/gateway.js";
 import { supabaseAdmin } from "../lib/supabase.js";
+import { markPendingAdsForUsers } from "../services/ads.service.js";
 
 export const tablesRouter = Router();
 
@@ -105,6 +106,11 @@ tablesRouter.post("/leave-game", requireAuth, async (req, res) => {
     const result = leaveGameRoom(userId);
 
     if (result.dissolved) {
+      // Same as normal finish: everyone who was in a live match owes the ad gate.
+      if (result.hadLiveMatch) {
+        await markPendingAdsForUsers(result.memberIds);
+      }
+
       let leftUsername = "მოთამაშე";
       const { data } = await supabaseAdmin
         .from("profiles")

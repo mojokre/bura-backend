@@ -184,7 +184,10 @@ export function answerColorAsk(
   };
 }
 
-/** If someone holds 5 trump and the table is empty, their turn comes next. */
+/**
+ * Deal-open only: if someone was dealt 5 trump, give them the lead so they can declare ბურა.
+ * Do NOT use after a trick is taken — the taker always leads next.
+ */
 export function assignTurnToBuraHolder(deal: BuraDealState): BuraDealState {
   if (
     deal.finished ||

@@ -353,6 +353,8 @@ export function leaveGameRoom(userId: string) {
 
   const room = rooms.get(roomId);
   const memberIds = getUsersInGameRoom(roomId);
+  // Live room exists only after the match started — mid-game leave still owes ads.
+  const hadLiveMatch = Boolean(getBuraLiveRoom(roomId));
 
   for (const memberId of memberIds) {
     currentRoomByUser.delete(memberId);
@@ -376,6 +378,7 @@ export function leaveGameRoom(userId: string) {
     roomId,
     memberIds,
     leftUserId: userId,
+    hadLiveMatch,
   };
 }
 
@@ -415,12 +418,15 @@ export function getUserGameRoomId(userId: string) {
 }
 
 /**
- * Room id only when a live Bura match is running.
- * Lobby seats also get a roomId early — those must NOT trigger /table redirects
- * or clients hit ROOM_NOT_FOUND before the table is full.
+ * Room id only when a live Bura match is still playable.
+ * Lobby seats and finished matches must NOT redirect /main → /table
+ * (finished would flash winners ↔ ad gate).
  */
 export function getActiveLiveGameRoomId(userId: string) {
   const roomId = currentRoomByUser.get(userId);
   if (!roomId) return null;
-  return getBuraLiveRoom(roomId) ? roomId : null;
+  const live = getBuraLiveRoom(roomId);
+  if (!live) return null;
+  if (live.match.status === "finished") return null;
+  return roomId;
 }

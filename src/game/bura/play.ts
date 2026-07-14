@@ -11,7 +11,7 @@ import {
   type Suit,
 } from "./types.js";
 import { isTrump } from "./deck.js";
-import { finishDealByTakenPoints, refillHandsAfterTrick, assignTurnToBuraHolder } from "./engine.js";
+import { finishDealByTakenPoints, refillHandsAfterTrick } from "./engine.js";
 
 function rankValue(rank: Rank): number {
   return RANK_ORDER.length - RANK_ORDER.indexOf(rank);
@@ -308,7 +308,8 @@ export function settleResolvedTrick(match: BuraMatchState): BuraMatchState {
 
   return {
     ...match,
-    deal: assignTurnToBuraHolder(nextDeal),
+    // Winner of the trick always leads after refill — do not jump turn to a ბურა holder.
+    deal: nextDeal,
   };
 }
 
