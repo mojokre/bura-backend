@@ -48,6 +48,7 @@ type LiveRoom = {
   turnTimer: ReturnType<typeof setTimeout> | null;
   settleTimer: ReturnType<typeof setTimeout> | null;
   finishTimer: ReturnType<typeof setTimeout> | null;
+  leaderboardAwarded?: boolean;
 };
 
 const rooms = new Map<string, LiveRoom>();
@@ -229,6 +230,26 @@ function maybeScheduleMatchCleanup(room: LiveRoom) {
   if (room.match.status !== "finished" || room.finishTimer) return;
   clearTurnTimer(room);
   clearSettleTimer(room);
+
+  if (!room.leaderboardAwarded) {
+    room.leaderboardAwarded = true;
+    const score0 = room.match.scores[0] ?? 0;
+    const score1 = room.match.scores[1] ?? 0;
+    const resolvedTeam = (score0 >= score1 ? 0 : 1) as 0 | 1;
+    const winnerUserIds = room.players
+      .filter((p) => teamOf(p.seat) === resolvedTeam)
+      .map((p) => p.userId);
+    void import("./leaderboard.service.js")
+      .then(({ awardMatchWin }) =>
+        awardMatchWin({
+          roomId: room.roomId,
+          winnerTeam: resolvedTeam,
+          winnerUserIds,
+        }),
+      )
+      .catch(() => {});
+  }
+
   room.finishTimer = setTimeout(() => {
     void (async () => {
       try {
