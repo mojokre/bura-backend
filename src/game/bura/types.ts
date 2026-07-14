@@ -66,6 +66,8 @@ export type BuraDealState = {
   winningSeat: SeatIndex | null;
   /** Trick finished; waiting for collect animation then settle */
   pendingSettle: boolean;
+  /** 5 trump laid on table — waiting short reveal before scoring */
+  buraReveal: boolean;
   /** Just-resolved trick (for client animation); cleared after settle broadcast */
   lastResolved: {
     trick: TrickPlay[];

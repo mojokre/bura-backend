@@ -11,7 +11,7 @@ import {
   type Suit,
 } from "./types.js";
 import { isTrump } from "./deck.js";
-import { finishDealByTakenPoints, finishDealWithWinner, findBuraSeat, refillHandsAfterTrick } from "./engine.js";
+import { finishDealByTakenPoints, refillHandsAfterTrick, assignTurnToBuraHolder } from "./engine.js";
 
 function rankValue(rank: Rank): number {
   return RANK_ORDER.length - RANK_ORDER.indexOf(rank);
@@ -165,6 +165,9 @@ export function playCards(
     throw new Error("თამაში არ მიდის.");
   }
   const deal = match.deal;
+  if (deal.buraReveal) {
+    throw new Error("ბურა უკვე გამოცხადებულია.");
+  }
   if (deal.pendingSettle) {
     throw new Error("ცოტა დაიცადე — კარტები იღება.");
   }
@@ -293,16 +296,6 @@ export function settleResolvedTrick(match: BuraMatchState): BuraMatchState {
   };
   nextDeal = refillHandsAfterTrick(nextDeal, winnerSeat, match.config.handSize);
 
-  const buraSeat = findBuraSeat(nextDeal);
-  if (buraSeat !== null) {
-    return finishDealWithWinner(
-      { ...match, deal: nextDeal },
-      nextDeal,
-      teamOf(buraSeat),
-      "bura",
-    );
-  }
-
   const allHandsEmpty = ([0, 1, 2, 3] as SeatIndex[]).every(
     (s) => nextDeal.hands[s].length === 0,
   );
@@ -315,7 +308,55 @@ export function settleResolvedTrick(match: BuraMatchState): BuraMatchState {
 
   return {
     ...match,
-    deal: nextDeal,
+    deal: assignTurnToBuraHolder(nextDeal),
+  };
+}
+
+/**
+ * Player with 5 trump presses ბურა on their turn: lay all five face-up.
+ * Room service waits ~2.8s then scores the round.
+ */
+export function declareBura(
+  match: BuraMatchState,
+  fromSeat: SeatIndex,
+): BuraMatchState {
+  if (match.status !== "playing" || !match.deal || match.deal.finished) {
+    throw new Error("თამაში არ მიდის.");
+  }
+  const deal = match.deal;
+  if (deal.buraReveal) {
+    throw new Error("ბურა უკვე გამოცხადებულია.");
+  }
+  if (deal.pendingSettle || deal.pendingRaise) {
+    throw new Error("ახლა ბურა ვერ გამოცხადდება.");
+  }
+  if (deal.currentTrick.length > 0) {
+    throw new Error("ჯერ მაგიდა უნდა იყოს ცარიელი.");
+  }
+  if (deal.turnSeat !== fromSeat) {
+    throw new Error("არ არის შენი სვლა.");
+  }
+  const hand = deal.hands[fromSeat];
+  if (!isBuraHand(hand, deal.trump)) {
+    throw new Error("ბურა მხოლოდ 5 კოზირით.");
+  }
+
+  const cards = [...hand];
+  return {
+    ...match,
+    deal: {
+      ...deal,
+      hands: {
+        ...deal.hands,
+        [fromSeat]: [],
+      },
+      currentTrick: [{ seat: fromSeat, cards }],
+      turnSeat: fromSeat,
+      winningSeat: fromSeat,
+      pendingSettle: false,
+      lastResolved: null,
+      buraReveal: true,
+    },
   };
 }
 
@@ -323,12 +364,27 @@ export function settleResolvedTrick(match: BuraMatchState): BuraMatchState {
  * Timeout auto-play: legal + reasonably advantageous.
  * Lead: prefer longest same-suit that isn't pure trump waste; lowest ranks.
  * Follow: beat if possible with cheapest combo; else dump lowest points/rank.
+ * If the seat holds ბურა, auto-declare instead of playing a card.
  */
 export function autoPlayForSeat(match: BuraMatchState, seat: SeatIndex): BuraMatchState {
   const deal = match.deal;
-  if (!deal || deal.turnSeat !== seat || deal.pendingSettle) return match;
+  if (!deal || deal.turnSeat !== seat || deal.pendingSettle || deal.buraReveal) {
+    return match;
+  }
   const hand = deal.hands[seat];
   if (hand.length === 0) return match;
+
+  if (
+    deal.currentTrick.length === 0 &&
+    !deal.pendingRaise &&
+    isBuraHand(hand, deal.trump)
+  ) {
+    try {
+      return declareBura(match, seat);
+    } catch {
+      // fall through to normal auto-play
+    }
+  }
 
   const chosen = pickAutoCards(deal, seat, hand);
   if (!chosen || chosen.length === 0) return match;

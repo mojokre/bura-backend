@@ -5,13 +5,14 @@ import { supabaseAdmin } from "../lib/supabase.js";
 import {
   answerColorAsk,
   createMatch,
+  finishDealWithWinner,
   offerRaise,
   publicDealView,
   respondRaise,
   startDeal,
   type RaiseResponse,
 } from "../game/bura/engine.js";
-import { autoPlayForSeat, playCards, settleResolvedTrick } from "../game/bura/play.js";
+import { autoPlayForSeat, declareBura, playCards, settleResolvedTrick } from "../game/bura/play.js";
 import type {
   BuraMatchState,
   Card,
@@ -37,6 +38,9 @@ type RoomPlayer = {
   seat: SeatIndex;
 };
 
+/** Show 5 trump on table before scoring the round. */
+const BURA_REVEAL_MS = 2_800;
+
 type LiveRoom = {
   roomId: string;
   game: "bura";
@@ -48,6 +52,7 @@ type LiveRoom = {
   turnTimer: ReturnType<typeof setTimeout> | null;
   settleTimer: ReturnType<typeof setTimeout> | null;
   finishTimer: ReturnType<typeof setTimeout> | null;
+  buraRevealTimer: ReturnType<typeof setTimeout> | null;
   leaderboardAwarded?: boolean;
   /** dealNumber for which we already emitted chat "ბურა". */
   buraChatDeal?: number;
@@ -103,6 +108,43 @@ function clearSettleTimer(room: LiveRoom) {
   }
 }
 
+function clearBuraRevealTimer(room: LiveRoom) {
+  if (room.buraRevealTimer) {
+    clearTimeout(room.buraRevealTimer);
+    room.buraRevealTimer = null;
+  }
+}
+
+function scheduleBuraRevealFinish(room: LiveRoom) {
+  clearTurnTimer(room);
+  clearSettleTimer(room);
+  clearBuraRevealTimer(room);
+  room.turnDeadline = null;
+  room.buraRevealTimer = setTimeout(() => {
+    try {
+      const deal = room.match.deal;
+      if (!deal?.buraReveal) return;
+      const declarer = deal.currentTrick[0]?.seat;
+      if (declarer === undefined) return;
+      room.match = finishDealWithWinner(
+        room.match,
+        deal,
+        teamOf(declarer),
+        "bura",
+      );
+      room.buraRevealTimer = null;
+      if (room.match.status === "between") {
+        scheduleNextDealAfterBetween(room);
+      } else if (room.match.status === "finished") {
+        // match cleanup via broadcastRoom
+      }
+      broadcastRoom(room);
+    } catch {
+      // ignore
+    }
+  }, BURA_REVEAL_MS);
+}
+
 function scheduleNextDealAfterBetween(room: LiveRoom) {
   clearSettleTimer(room);
   clearTurnTimer(room);
@@ -151,13 +193,18 @@ function scheduleTurnTimer(room: LiveRoom) {
   if (room.match.status !== "playing" || !room.match.deal || room.match.deal.finished) {
     return;
   }
-  if (room.match.deal.pendingSettle) return;
+  if (room.match.deal.pendingSettle || room.match.deal.buraReveal) return;
   room.turnDeadline = Date.now() + TURN_MS;
   room.turnTimer = setTimeout(() => {
     try {
       const seat = room.match.deal?.turnSeat;
       if (seat === undefined) return;
       room.match = autoPlayForSeat(room.match, seat);
+      if (room.match.deal?.buraReveal) {
+        broadcastRoom(room);
+        scheduleBuraRevealFinish(room);
+        return;
+      }
       if (room.match.deal?.pendingSettle) {
         broadcastRoom(room);
         scheduleSettle(room);
@@ -350,6 +397,7 @@ export async function createBuraLiveRoom(input: {
     turnTimer: null,
     settleTimer: null,
     finishTimer: null,
+    buraRevealTimer: null,
   };
   rooms.set(input.roomId, room);
 
@@ -418,6 +466,27 @@ export function playBuraCards(roomId: string, userId: string, cardIds: string[])
   return viewerPayload(room, userId);
 }
 
+export function declareBuraCards(roomId: string, userId: string) {
+  const room = rooms.get(roomId);
+  if (!room) throw new AppError(404, "ROOM_NOT_FOUND", "ოთახი ვერ მოიძებნა.");
+  const player = room.players.find((p) => p.userId === userId);
+  if (!player) throw new AppError(403, "FORBIDDEN", "ამ ოთახში არ ხარ.");
+
+  try {
+    room.match = declareBura(room.match, player.seat);
+  } catch (err) {
+    throw new AppError(
+      400,
+      "BURA_FAILED",
+      err instanceof Error ? err.message : "ბურა ვერ გამოცხადდა.",
+    );
+  }
+
+  scheduleBuraRevealFinish(room);
+  broadcastRoom(room);
+  return viewerPayload(room, userId);
+}
+
 export function offerBuraRaise(
   roomId: string,
   userId: string,
@@ -482,6 +551,7 @@ export function destroyBuraLiveRoom(roomId: string) {
   if (!room) return;
   clearTurnTimer(room);
   clearSettleTimer(room);
+  clearBuraRevealTimer(room);
   if (room.finishTimer) {
     clearTimeout(room.finishTimer);
     room.finishTimer = null;

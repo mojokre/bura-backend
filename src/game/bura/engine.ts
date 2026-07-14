@@ -112,6 +112,7 @@ export function startDeal(match: BuraMatchState): BuraMatchState {
     endReason: null,
     winningSeat: null,
     pendingSettle: false,
+    buraReveal: false,
     lastResolved: null,
   };
 
@@ -126,15 +127,10 @@ export function startDeal(match: BuraMatchState): BuraMatchState {
     };
   }
 
-  const buraSeat = findBuraSeat(deal);
-  if (buraSeat !== null) {
-    return finishDealWithWinner(match, deal, teamOf(buraSeat), "bura", dealNumber);
-  }
-
   return {
     ...match,
     dealNumber,
-    deal,
+    deal: assignTurnToBuraHolder(deal),
     status: "playing",
     carryRaise: null,
     carryLastRaiseTeam: null,
@@ -176,20 +172,34 @@ export function answerColorAsk(
   };
 
   const buraSeat = findBuraSeat(nextDeal);
-  if (buraSeat !== null) {
-    return finishDealWithWinner(
-      match,
-      nextDeal,
-      teamOf(buraSeat),
-      "bura",
-      match.dealNumber,
-    );
-  }
+  const dealReady =
+    buraSeat !== null
+      ? assignTurnToBuraHolder(nextDeal)
+      : nextDeal;
 
   return {
     ...match,
-    deal: nextDeal,
+    deal: dealReady,
     status: "playing",
+  };
+}
+
+/** If someone holds 5 trump and the table is empty, their turn comes next. */
+export function assignTurnToBuraHolder(deal: BuraDealState): BuraDealState {
+  if (
+    deal.finished ||
+    deal.buraReveal ||
+    deal.pendingSettle ||
+    deal.pendingRaise ||
+    deal.currentTrick.length > 0
+  ) {
+    return deal;
+  }
+  const buraSeat = findBuraSeat(deal);
+  if (buraSeat === null) return deal;
+  return {
+    ...deal,
+    turnSeat: buraSeat,
   };
 }
 
@@ -241,6 +251,7 @@ export function finishDealWithWinner(
     endReason: endReason === "draw" ? "draw" : endReason,
     winningSeat: null,
     pendingSettle: false,
+    buraReveal: false,
     lastResolved: null,
   };
 
@@ -421,6 +432,7 @@ export function publicDealView(
     !deal.finished &&
     !deal.pendingRaise &&
     !deal.pendingSettle &&
+    !deal.buraReveal &&
     deal.turnSeat === viewerSeat &&
     nextLevel !== null &&
     (deal.lastRaiseTeam === null || deal.lastRaiseTeam !== myTeam);
@@ -439,6 +451,7 @@ export function publicDealView(
     !deal.finished &&
     !deal.pendingRaise &&
     !deal.pendingSettle &&
+    !deal.buraReveal &&
     deal.endReason === null;
   const leadCount = deal.currentTrick[0]?.cards.length ?? 0;
   const myTurn = deal.turnSeat === viewerSeat;
@@ -473,7 +486,12 @@ export function publicDealView(
     canRespondRaise: canRespond,
     canCounterRaise: canRespond ? counterLevel : null,
     canOfferMalyutka,
-    canDeclareBura: isPlaying && hasBura,
+    canDeclareBura:
+      isPlaying &&
+      hasBura &&
+      myTurn &&
+      deal.currentTrick.length === 0,
+    buraReveal: deal.buraReveal,
     leadSeat: deal.leadSeat,
     turnSeat: deal.turnSeat,
     winningSeat: deal.winningSeat,

@@ -4,6 +4,7 @@ import { requireAuth } from "../middleware/requireAuth.js";
 import { AppError } from "../lib/errors.js";
 import {
   answerBuraColor,
+  declareBuraCards,
   getBuraRoomView,
   offerBuraRaise,
   playBuraCards,
@@ -94,6 +95,23 @@ buraRouter.post("/:roomId/play", requireAuth, (req, res) => {
       });
     }
     const state = playBuraCards(roomId, userId, parsed.data.cardIds);
+    return res.json({ state });
+  } catch (error) {
+    return handleError(res, error);
+  }
+});
+
+buraRouter.post("/:roomId/bura", requireAuth, (req, res) => {
+  try {
+    const userId = (req as any).userId as string;
+    const { roomId } = req.params;
+    if (!roomId || Array.isArray(roomId)) {
+      return res.status(400).json({
+        code: "VALIDATION_ERROR",
+        message: "არასწორი roomId.",
+      });
+    }
+    const state = declareBuraCards(roomId, userId);
     return res.json({ state });
   } catch (error) {
     return handleError(res, error);
