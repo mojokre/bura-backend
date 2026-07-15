@@ -2,9 +2,11 @@ import { randomBytes } from "crypto";
 import { build36Deck, isTrump, shuffleDeck } from "./deck.js";
 import {
   RAISE_POINTS,
+  activeSeatsForMode,
   nextRaiseLevel,
   nextSeat,
   nextSeatOfTeam,
+  playerCountForMode,
   refusePointsForPending,
   sumCardPoints,
   suitColor,
@@ -24,10 +26,16 @@ const DEFAULT_CONFIG: BuraMatchConfig = {
   matchTo: 11,
   handSize: 5,
   malyutkaMode: "turn",
+  mode: "2v2",
 };
 
-function cryptoSeat(): SeatIndex {
-  return (randomBytes(1)[0]! % 4) as SeatIndex;
+function emptyHands(): Record<SeatIndex, Card[]> {
+  return { 0: [], 1: [], 2: [], 3: [] };
+}
+
+function cryptoActiveSeat(mode: "1v1" | "2v2"): SeatIndex {
+  const active = activeSeatsForMode(mode);
+  return active[randomBytes(1)[0]! % active.length]!;
 }
 
 export function createMatch(
@@ -35,19 +43,25 @@ export function createMatch(
   seats: PlayerSeat[],
   config: Partial<BuraMatchConfig> = {},
 ): BuraMatchState {
-  if (seats.length !== 4) {
-    throw new Error("Bura 2v2 requires exactly 4 seated players.");
+  const merged: BuraMatchConfig = { ...DEFAULT_CONFIG, ...config };
+  const expected = playerCountForMode(merged.mode);
+  if (seats.length !== expected) {
+    throw new Error(
+      merged.mode === "1v1"
+        ? "Bura 1v1 requires exactly 2 seated players."
+        : "Bura 2v2 requires exactly 4 seated players.",
+    );
   }
 
   return {
     roomId,
     seats,
     scores: { 0: 0, 1: 0 },
-    dealerSeat: 0,
+    dealerSeat: seats[0]!.seat,
     nextLeadSeat: null,
     dealNumber: 0,
     deal: null,
-    config: { ...DEFAULT_CONFIG, ...config },
+    config: merged,
     status: "between",
     carryRaise: null,
     carryLastRaiseTeam: null,
@@ -55,18 +69,15 @@ export function createMatch(
 }
 
 export function startDeal(match: BuraMatchState): BuraMatchState {
+  const mode = match.config.mode;
+  const active = activeSeatsForMode(mode);
   const shuffled = shuffleDeck(build36Deck());
-  const hands: Record<SeatIndex, Card[]> = {
-    0: [],
-    1: [],
-    2: [],
-    3: [],
-  };
+  const hands = emptyHands();
 
   let cursor = 0;
   for (let round = 0; round < match.config.handSize; round += 1) {
-    for (let seat = 0; seat < 4; seat += 1) {
-      hands[seat as SeatIndex].push(shuffled[cursor]!);
+    for (const seat of active) {
+      hands[seat].push(shuffled[cursor]!);
       cursor += 1;
     }
   }
@@ -81,9 +92,9 @@ export function startDeal(match: BuraMatchState): BuraMatchState {
   const provisionalLead =
     !isFirstDeal && match.nextLeadSeat !== null
       ? match.nextLeadSeat
-      : (((match.dealerSeat + 1) % 4) as SeatIndex);
+      : nextSeat(match.dealerSeat, mode);
 
-  const askedSeat = isFirstDeal ? cryptoSeat() : null;
+  const askedSeat = isFirstDeal ? cryptoActiveSeat(mode) : null;
 
   // 60–60 replay: same დავი/სე/ჩარი (and who may raise next) until someone hits 61.
   const carriedRaise = match.carryRaise ?? "none";
@@ -158,7 +169,8 @@ export function answerColorAsk(
   }
 
   const trumpIs = suitColor(deal.trump);
-  const leadSeat = answer === trumpIs ? fromSeat : nextSeat(fromSeat);
+  const leadSeat =
+    answer === trumpIs ? fromSeat : nextSeat(fromSeat, match.config.mode);
 
   const nextDeal: BuraDealState = {
     ...deal,
@@ -263,7 +275,7 @@ export function finishDealWithWinner(
   const nextLead =
     endReason === "draw"
       ? finishedDeal.leadSeat
-      : nextSeatOfTeam(finishedDeal.leadSeat, loserTeam);
+      : nextSeatOfTeam(finishedDeal.leadSeat, loserTeam, match.config.mode);
 
   const matchFinished =
     endReason !== "draw" &&
@@ -280,7 +292,7 @@ export function finishDealWithWinner(
     dealerSeat:
       endReason === "draw"
         ? match.dealerSeat
-        : (((match.dealerSeat + 1) % 4) as SeatIndex),
+        : nextSeat(match.dealerSeat, match.config.mode),
     carryRaise: endReason === "draw" ? deal.raise : null,
     carryLastRaiseTeam: endReason === "draw" ? deal.lastRaiseTeam : null,
   };
@@ -337,7 +349,7 @@ export function offerRaise(
   if (!canOfferRaise(match.deal.raise, level)) {
     throw new Error("ეს დონე ახლა არ შეიძლება.");
   }
-  const myTeam = teamOf(fromSeat);
+  const myTeam = teamOf(fromSeat, match.config.mode);
   if (
     match.deal.lastRaiseTeam !== null &&
     match.deal.lastRaiseTeam === myTeam
@@ -376,7 +388,7 @@ export function respondRaise(
     throw new Error("ხელი არ მიდის.");
   }
   // Only the next clockwise seat after the offerer answers (always opposite team).
-  const responder = nextSeat(deal.pendingRaiseFrom);
+  const responder = nextSeat(deal.pendingRaiseFrom, match.config.mode);
   if (responderSeat !== responder) {
     throw new Error("პასუხი მხოლოდ შემდეგ მოწინააღმდეგეს შეუძლია.");
   }
@@ -387,7 +399,7 @@ export function respondRaise(
       deal: {
         ...deal,
         raise: deal.pendingRaise,
-        lastRaiseTeam: teamOf(deal.pendingRaiseFrom),
+        lastRaiseTeam: teamOf(deal.pendingRaiseFrom, match.config.mode),
         pendingRaise: null,
         pendingRaiseFrom: null,
       },
@@ -395,7 +407,7 @@ export function respondRaise(
   }
 
   if (response === "refuse") {
-    const raisingTeam = teamOf(deal.pendingRaiseFrom);
+    const raisingTeam = teamOf(deal.pendingRaiseFrom, match.config.mode);
     const award = refusePointsForPending(deal.pendingRaise);
     return finishDealWithWinner(
       match,
@@ -425,12 +437,13 @@ export function publicDealView(
   deal: BuraDealState,
   viewerSeat: SeatIndex,
   malyutkaMode: "turn" | "anytime" = "turn",
+  mode: "1v1" | "2v2" = "2v2",
 ) {
   const trumpStillInStock = deal.deckRemaining.some(
     (c) => c.id === deal.trumpCard.id,
   );
   const nextLevel = nextRaiseLevel(deal.raise);
-  const myTeam = teamOf(viewerSeat);
+  const myTeam = teamOf(viewerSeat, mode);
   const canOffer =
     !deal.finished &&
     !deal.pendingRaise &&
@@ -440,7 +453,9 @@ export function publicDealView(
     nextLevel !== null &&
     (deal.lastRaiseTeam === null || deal.lastRaiseTeam !== myTeam);
   const raiseResponder =
-    deal.pendingRaiseFrom !== null ? nextSeat(deal.pendingRaiseFrom) : null;
+    deal.pendingRaiseFrom !== null
+      ? nextSeat(deal.pendingRaiseFrom, mode)
+      : null;
   const canRespond =
     !deal.finished &&
     deal.pendingRaise !== null &&
@@ -530,6 +545,7 @@ export function refillHandsAfterTrick(
   deal: BuraDealState,
   winnerSeat: SeatIndex,
   handSize = 5,
+  mode: "1v1" | "2v2" = "2v2",
 ): BuraDealState {
   const hands: Record<SeatIndex, Card[]> = {
     0: [...deal.hands[0]],
@@ -538,15 +554,18 @@ export function refillHandsAfterTrick(
     3: [...deal.hands[3]],
   };
   const stock = [...deal.deckRemaining];
+  const active = activeSeatsForMode(mode);
+  const startIdx = Math.max(0, active.indexOf(winnerSeat));
 
   /**
    * Round-robin full rounds so hands stay equal.
    * Stock includes the face-up trump as its last card — it will be dealt.
+   * Only active seats receive cards (1v1 = seats 0 and 2).
    */
   for (;;) {
     const needy: SeatIndex[] = [];
-    for (let offset = 0; offset < 4; offset += 1) {
-      const seat = ((winnerSeat + offset) % 4) as SeatIndex;
+    for (let offset = 0; offset < active.length; offset += 1) {
+      const seat = active[(startIdx + offset) % active.length]!;
       if (hands[seat].length < handSize) needy.push(seat);
     }
     if (needy.length === 0) break;

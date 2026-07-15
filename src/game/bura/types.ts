@@ -27,6 +27,8 @@ export type BuraMatchConfig = {
   handSize: 5;
   /** turn = რიგით (lead only); anytime = ურიგოდ (can interrupt). */
   malyutkaMode: "turn" | "anytime";
+  /** 1v1 = seats 0+2 opposite; 2v2 = classic four-seat. */
+  mode: "1v1" | "2v2";
 };
 
 export type TrickPlay = {
@@ -132,7 +134,11 @@ export function nextRaiseLevel(current: RaiseLevel): RaiseLevel | null {
   return null;
 }
 
-export function teamOf(seat: SeatIndex): TeamId {
+export function teamOf(seat: SeatIndex, mode: "1v1" | "2v2" = "2v2"): TeamId {
+  // 1v1 sits on 0 and 2; they must be opposing teams (not seat%2, which is same team).
+  if (mode === "1v1") {
+    return (seat === 0 ? 0 : 1) as TeamId;
+  }
   return (seat % 2) as TeamId;
 }
 
@@ -140,16 +146,42 @@ export function suitColor(suit: Suit): ColorChoice {
   return suit === "hearts" || suit === "diamonds" ? "red" : "black";
 }
 
-export function nextSeat(seat: SeatIndex): SeatIndex {
+/** Active seats for table mode: 1v1 sits opposite (0 and 2). */
+export function activeSeatsForMode(mode: "1v1" | "2v2"): SeatIndex[] {
+  return mode === "1v1" ? [0, 2] : [0, 1, 2, 3];
+}
+
+export function playerCountForMode(mode: "1v1" | "2v2"): number {
+  return mode === "1v1" ? 2 : 4;
+}
+
+/** Clockwise next among all four seats (ignore mode). */
+export function nextSeatRing(seat: SeatIndex): SeatIndex {
   return ((seat + 1) % 4) as SeatIndex;
 }
 
-/** Next member of `team` after `from` (exclusive), clockwise. */
-export function nextSeatOfTeam(from: SeatIndex, team: TeamId): SeatIndex {
-  let seat = nextSeat(from);
-  for (let i = 0; i < 4; i += 1) {
-    if (teamOf(seat) === team) return seat;
-    seat = nextSeat(seat);
+/** Clockwise next among active seats for this match. */
+export function nextSeat(
+  seat: SeatIndex,
+  mode: "1v1" | "2v2" = "2v2",
+): SeatIndex {
+  const active = activeSeatsForMode(mode);
+  const idx = active.indexOf(seat);
+  if (idx < 0) return active[0]!;
+  return active[(idx + 1) % active.length]!;
+}
+
+/** Next member of `team` after `from` (exclusive), clockwise among active seats. */
+export function nextSeatOfTeam(
+  from: SeatIndex,
+  team: TeamId,
+  mode: "1v1" | "2v2" = "2v2",
+): SeatIndex {
+  let seat = nextSeat(from, mode);
+  const active = activeSeatsForMode(mode);
+  for (let i = 0; i < active.length; i += 1) {
+    if (teamOf(seat, mode) === team) return seat;
+    seat = nextSeat(seat, mode);
   }
   return seat;
 }

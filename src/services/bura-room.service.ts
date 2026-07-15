@@ -129,7 +129,7 @@ function scheduleBuraRevealFinish(room: LiveRoom) {
       room.match = finishDealWithWinner(
         room.match,
         deal,
-        teamOf(declarer),
+        teamOf(declarer, room.match.config.mode),
         "bura",
       );
       room.buraRevealTimer = null;
@@ -240,7 +240,12 @@ function viewerPayload(room: LiveRoom, userId: string) {
 
   const deal = room.match.deal;
   const dealView = deal
-    ? publicDealView(deal, me.seat, room.match.config.malyutkaMode)
+    ? publicDealView(
+        deal,
+        me.seat,
+        room.match.config.malyutkaMode,
+        room.match.config.mode,
+      )
     : null;
   const hideTrump = room.match.status === "color_ask";
 
@@ -256,13 +261,14 @@ function viewerPayload(room: LiveRoom, userId: string) {
     config: {
       matchTo: room.match.config.matchTo,
       malyutkaMode: room.match.config.malyutkaMode,
+      mode: room.match.config.mode,
     },
     players: room.players.map((p) => ({
       seat: p.seat,
       userId: p.userId,
       username: p.username,
       iconUrl: p.iconUrl,
-      team: teamOf(p.seat),
+      team: teamOf(p.seat, room.match.config.mode),
       handCount: deal ? deal.hands[p.seat].length : 0,
       isMe: p.userId === userId,
     })),
@@ -292,7 +298,7 @@ function maybeScheduleMatchCleanup(room: LiveRoom) {
     const score1 = room.match.scores[1] ?? 0;
     const resolvedTeam = (score0 >= score1 ? 0 : 1) as 0 | 1;
     const winnerUserIds = room.players
-      .filter((p) => teamOf(p.seat) === resolvedTeam)
+      .filter((p) => teamOf(p.seat, room.match.config.mode) === resolvedTeam)
       .map((p) => p.userId);
     const allUserIds = room.players.map((p) => p.userId);
     void import("./leaderboard.service.js")
@@ -329,7 +335,7 @@ function maybeAnnounceBura(room: LiveRoom) {
   room.buraChatDeal = room.match.dealNumber;
   const winnerTeam = deal.winnerTeam;
   const speaker =
-    room.players.find((p) => teamOf(p.seat) === winnerTeam) ?? room.players[0];
+    room.players.find((p) => teamOf(p.seat, room.match.config.mode) === winnerTeam) ?? room.players[0];
   if (!speaker) return;
   const ts = Date.now();
   for (const p of room.players) {
@@ -356,9 +362,16 @@ export async function createBuraLiveRoom(input: {
   userIds: string[];
   matchTo?: number;
   malyutkaMode?: "turn" | "anytime";
+  mode?: "1v1" | "2v2";
 }) {
-  if (input.userIds.length !== 4) {
-    throw new AppError(400, "NEED_4", "სჭირდება 4 მოთამაშე.");
+  const mode = input.mode === "1v1" ? "1v1" : "2v2";
+  const expected = mode === "1v1" ? 2 : 4;
+  if (input.userIds.length !== expected) {
+    throw new AppError(
+      400,
+      mode === "1v1" ? "NEED_2" : "NEED_4",
+      mode === "1v1" ? "სჭირდება 2 მოთამაშე." : "სჭირდება 4 მოთამაშე.",
+    );
   }
 
   const existing = rooms.get(input.roomId);
@@ -368,23 +381,31 @@ export async function createBuraLiveRoom(input: {
   }
 
   const profiles = await resolvePlayers(input.userIds);
-  const seats: PlayerSeat[] = profiles.map((p, index) => ({
-    seat: index as SeatIndex,
-    userId: p.userId,
-    username: p.username,
-    team: teamOf(index as SeatIndex),
-  }));
+  // 1v1: opposite seats 0 and 2 (viewer sees opponent on top).
+  // 2v2: classic join order → seats 0,1,2,3.
+  const seatIndexes: SeatIndex[] =
+    mode === "1v1" ? [0, 2] : [0, 1, 2, 3];
+
+  const seats: PlayerSeat[] = profiles.map((p, index) => {
+    const seat = seatIndexes[index]!;
+    return {
+      seat,
+      userId: p.userId,
+      username: p.username,
+      team: teamOf(seat, mode),
+    };
+  });
 
   const players: RoomPlayer[] = profiles.map((p, index) => ({
     ...p,
-    seat: index as SeatIndex,
+    seat: seatIndexes[index]!,
   }));
 
   const matchTo = Math.min(11, Math.max(3, input.matchTo ?? 11));
   const malyutkaMode = input.malyutkaMode === "anytime" ? "anytime" : "turn";
 
   const match = startDeal(
-    createMatch(input.roomId, seats, { matchTo, malyutkaMode }),
+    createMatch(input.roomId, seats, { matchTo, malyutkaMode, mode }),
   );
 
   const room: LiveRoom = {

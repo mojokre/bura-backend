@@ -12,7 +12,9 @@ import {
 import { createBuraLiveRoom } from "./bura-room.service.js";
 import {
   tableRulesSchema,
+  tableModeSchema,
   type MalyutkaMode,
+  type TableMode,
 } from "../game/bura/table-rules.js";
 
 export type PrivateSeatStatus = "pending" | "accepted" | "rejected";
@@ -38,6 +40,7 @@ export type PrivateLobby = {
   createdAt: number;
   malyutkaMode: MalyutkaMode;
   matchTo: number;
+  mode: TableMode;
 };
 
 type PrivateLobbyInternal = {
@@ -51,16 +54,20 @@ type PrivateLobbyInternal = {
   createdAt: number;
   malyutkaMode: MalyutkaMode;
   matchTo: number;
+  mode: TableMode;
 };
 
-const MAX_PLAYERS = 4;
-const INVITE_COUNT = 3;
+const MAX_PLAYERS_2V2 = 4;
+const MAX_PLAYERS_1V1 = 2;
+const INVITE_COUNT_2V2 = 3;
+const INVITE_COUNT_1V1 = 1;
 
 const createSchema = z.object({
   game: z.literal("bura"),
-  friendIds: z.array(z.string().uuid()).length(INVITE_COUNT),
+  friendIds: z.array(z.string().uuid()).min(1).max(3),
   malyutkaMode: tableRulesSchema.shape.malyutkaMode,
   matchTo: tableRulesSchema.shape.matchTo,
+  mode: tableModeSchema.optional().default("2v2"),
 });
 
 const joinTeamSchema = z.object({
@@ -130,6 +137,7 @@ function serializeLobby(lobby: PrivateLobbyInternal): PrivateLobby {
     createdAt: lobby.createdAt,
     malyutkaMode: lobby.malyutkaMode,
     matchTo: lobby.matchTo,
+    mode: lobby.mode,
   };
 }
 
@@ -140,7 +148,7 @@ function acceptedCount(lobby: PrivateLobbyInternal) {
 
 function refreshLobbyStatus(lobby: PrivateLobbyInternal) {
   if (lobby.status === "started") return;
-  lobby.status = acceptedCount(lobby) >= MAX_PLAYERS ? "ready" : "waiting";
+  lobby.status = acceptedCount(lobby) >= lobby.maxPlayers ? "ready" : "waiting";
 }
 
 function emitLobbyToMembers(lobby: PrivateLobbyInternal, event: string, extra: Record<string, unknown> = {}) {
@@ -183,14 +191,24 @@ export async function createFriendsTable(hostId: string, body: unknown) {
     throw new AppError(
       400,
       "VALIDATION_ERROR",
-      `მალიუტკა რეჟიმი, ქულა (3–11) და ზუსტად ${INVITE_COUNT} მეგობარი სავალდებულოა.`,
+      "მალიუტკა რეჟიმი, ქულა (3–11), რეჟიმი და მეგობრები სავალდებულოა.",
     );
   }
 
   const { game, friendIds, malyutkaMode, matchTo } = parsed.data;
+  const mode: TableMode = parsed.data.mode === "1v1" ? "1v1" : "2v2";
+  const inviteCount = mode === "1v1" ? INVITE_COUNT_1V1 : INVITE_COUNT_2V2;
+  const maxPlayers = mode === "1v1" ? MAX_PLAYERS_1V1 : MAX_PLAYERS_2V2;
+
   const uniqueFriends = new Set(friendIds);
-  if (uniqueFriends.size !== INVITE_COUNT) {
-    throw new AppError(400, "DUPLICATE_INVITES", "მეგობრები არ უნდა გამეორდეს.");
+  if (uniqueFriends.size !== inviteCount || friendIds.length !== inviteCount) {
+    throw new AppError(
+      400,
+      "INVITE_COUNT",
+      mode === "1v1"
+        ? "1v1-ში ზუსტად 1 მეგობარი უნდა მოიწვიო."
+        : "2v2-ში ზუსტად 3 მეგობარი უნდა მოიწვიო.",
+    );
   }
   if (uniqueFriends.has(hostId)) {
     throw new AppError(400, "INVALID_INVITE", "საკუთარ თავს ვერ მოიწვევ.");
@@ -226,7 +244,8 @@ export async function createFriendsTable(hostId: string, body: unknown) {
       ...friend,
       status: "pending",
       isHost: false,
-      team: null,
+      // 1v1: guest is always the opposite team; no UI pick needed.
+      team: mode === "1v1" ? 1 : null,
     });
   }
 
@@ -235,12 +254,13 @@ export async function createFriendsTable(hostId: string, body: unknown) {
     game,
     hostId,
     status: "waiting",
-    maxPlayers: MAX_PLAYERS,
+    maxPlayers,
     seats,
     roomId: null,
     createdAt: Date.now(),
     malyutkaMode,
     matchTo,
+    mode,
   };
 
   privateLobbies.set(lobbyId, lobby);
@@ -287,8 +307,13 @@ export async function respondFriendsTableInvite(
   if (action === "accept") {
     leavePublicTableIfAny(userId);
     seat.status = "accepted";
-    // Do NOT auto-join a team — player must pick გუნდი 1 / გუნდი 2 manually.
-    seat.team = null;
+    if (lobby.mode === "1v1") {
+      // Opposite team of host — no team picker.
+      seat.team = 1;
+    } else {
+      // Do NOT auto-join a team — player must pick გუნდი 1 / გუნდი 2 manually.
+      seat.team = null;
+    }
     refreshLobbyStatus(lobby);
 
     emitLobbyToMembers(lobby, "friends-table:updated", {
@@ -338,22 +363,36 @@ export async function startFriendsTable(userId: string, lobbyId: string) {
   const accepted = Array.from(lobby.seats.values()).filter(
     (seat) => seat.status === "accepted",
   );
-  if (accepted.length < MAX_PLAYERS) {
+  if (accepted.length < lobby.maxPlayers) {
     throw new AppError(
       409,
       "NOT_READY",
-      `დაწყება შეიძლება მხოლოდ როცა ${MAX_PLAYERS} მოთამაშე დათანხმდება.`,
+      `დაწყება შეიძლება მხოლოდ როცა ${lobby.maxPlayers} მოთამაშე დათანხმდება.`,
     );
   }
 
-  const teamA = accepted.filter((s) => s.team === 0);
-  const teamB = accepted.filter((s) => s.team === 1);
-  if (teamA.length !== 2 || teamB.length !== 2) {
-    throw new AppError(
-      409,
-      "TEAMS_NOT_READY",
-      "თითო გუნდში უნდა იყოს 2 მოთამაშე.",
-    );
+  let acceptedIds: string[];
+
+  if (lobby.mode === "1v1") {
+    const hostSeat = accepted.find((s) => s.isHost);
+    const guestSeat = accepted.find((s) => !s.isHost);
+    if (!hostSeat || !guestSeat) {
+      throw new AppError(409, "NOT_READY", "1v1-ში ჰოსტი და სტუმარი სჭირდება.");
+    }
+    // createBuraLiveRoom maps [0]=seat0, [1]=seat2 (opposite).
+    acceptedIds = [hostSeat.id, guestSeat.id];
+  } else {
+    const teamA = accepted.filter((s) => s.team === 0);
+    const teamB = accepted.filter((s) => s.team === 1);
+    if (teamA.length !== 2 || teamB.length !== 2) {
+      throw new AppError(
+        409,
+        "TEAMS_NOT_READY",
+        "თითო გუნდში უნდა იყოს 2 მოთამაშე.",
+      );
+    }
+    // Seat order: 0+2 = team 0, 1+3 = team 1 (partners opposite each other).
+    acceptedIds = [teamA[0]!.id, teamB[0]!.id, teamA[1]!.id, teamB[1]!.id];
   }
 
   const pending = Array.from(lobby.seats.values()).filter(
@@ -372,8 +411,6 @@ export async function startFriendsTable(userId: string, lobbyId: string) {
   lobby.roomId = roomId;
   lobby.status = "started";
 
-  // Seat order: 0+2 = team 0, 1+3 = team 1 (partners opposite each other).
-  const acceptedIds = [teamA[0]!.id, teamB[0]!.id, teamA[1]!.id, teamB[1]!.id];
   registerUsersInGameRoom({
     roomId,
     tableId: lobbyId,
@@ -388,6 +425,7 @@ export async function startFriendsTable(userId: string, lobbyId: string) {
       userIds: acceptedIds,
       matchTo: lobby.matchTo,
       malyutkaMode: lobby.malyutkaMode,
+      mode: lobby.mode,
     });
   }
 
@@ -427,6 +465,13 @@ export async function joinFriendsTableTeam(
   const seat = lobby.seats.get(userId);
   if (!seat) {
     throw new AppError(403, "NOT_IN_LOBBY", "შენ ამ ლობიში არ ხარ.");
+  }
+  if (lobby.mode === "1v1") {
+    throw new AppError(
+      400,
+      "NO_TEAM_PICK",
+      "1v1-ში გუნდის არჩევა არ სჭირდება.",
+    );
   }
   if (seat.status !== "accepted") {
     throw new AppError(409, "NOT_ACCEPTED", "ჯერ მიიღე მოწვევა.");

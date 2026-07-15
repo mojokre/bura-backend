@@ -19,6 +19,7 @@ export const tablesRouter = Router();
 
 const gameQuerySchema = z.object({
   game: z.literal("bura"),
+  mode: z.enum(["1v1", "2v2"]).optional(),
 });
 
 tablesRouter.get("/public", (req, res) => {
@@ -30,7 +31,7 @@ tablesRouter.get("/public", (req, res) => {
     });
   }
 
-  const tables = getPublicTables(parsed.data.game);
+  const tables = getPublicTables(parsed.data.game, parsed.data.mode);
   return res.json({ tables });
 });
 

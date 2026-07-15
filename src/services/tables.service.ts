@@ -12,6 +12,7 @@ import {
   malyutkaModeLabelKa,
   tableRulesSchema,
   type MalyutkaMode,
+  type TableMode,
 } from "../game/bura/table-rules.js";
 
 export type GameType = "bura";
@@ -25,6 +26,7 @@ export type PublicTable = {
   maxPlayers: number;
   malyutkaMode: MalyutkaMode;
   matchTo: number;
+  mode: TableMode;
   joinedUsers: Array<{
     id: string;
     username: string;
@@ -42,6 +44,7 @@ type PublicTableMeta = {
   maxPlayers: number;
   malyutkaMode: MalyutkaMode;
   matchTo: number;
+  mode: TableMode;
   createdAt: number;
 };
 
@@ -52,7 +55,8 @@ type Room = {
   createdAt: number;
 };
 
-const MAX_PLAYERS = 4;
+const MAX_PLAYERS_2V2 = 4;
+const MAX_PLAYERS_1V1 = 2;
 
 const joinParamsSchema = z.object({
   tableId: z.string().min(1),
@@ -80,13 +84,18 @@ function serializePublicTable(meta: PublicTableMeta): PublicTable {
     playersCount: joined.length,
     malyutkaMode: meta.malyutkaMode,
     matchTo: meta.matchTo,
+    mode: meta.mode,
     joinedUsers: joined,
   };
 }
 
-export function getPublicTables(game: GameType): PublicTable[] {
+export function getPublicTables(
+  game: GameType,
+  mode?: TableMode,
+): PublicTable[] {
   return Array.from(publicTables.values())
     .filter((t) => t.game === game)
+    .filter((t) => (mode ? t.mode === mode : true))
     .sort((a, b) => b.createdAt - a.createdAt)
     .map(serializePublicTable);
 }
@@ -182,18 +191,23 @@ export async function createPublicTable(userId: string, body: unknown) {
   }
 
   const user = await resolveUser(userId);
-  const { malyutkaMode, matchTo } = parsed.data;
+  const { malyutkaMode, matchTo, mode } = parsed.data;
+  const tableMode: TableMode = mode === "1v1" ? "1v1" : "2v2";
+  const maxPlayers =
+    tableMode === "1v1" ? MAX_PLAYERS_1V1 : MAX_PLAYERS_2V2;
   const tableId = `pub_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
-  const label = `${malyutkaModeLabelKa(malyutkaMode)} · ${matchTo}`;
+  const modeLabel = tableMode === "1v1" ? "1v1" : "2v2";
+  const label = `${modeLabel} · ${malyutkaModeLabelKa(malyutkaMode)} · ${matchTo}`;
 
   const meta: PublicTableMeta = {
     id: tableId,
     game: "bura",
     hostId: user.id,
     label,
-    maxPlayers: MAX_PLAYERS,
+    maxPlayers,
     malyutkaMode,
     matchTo,
+    mode: tableMode,
     createdAt: Date.now(),
   };
   publicTables.set(tableId, meta);
@@ -275,6 +289,7 @@ export async function joinPublicTable(userId: string, tableId: string) {
       userIds,
       matchTo: table.matchTo,
       malyutkaMode: table.malyutkaMode,
+      mode: table.mode,
     });
     started = true;
     for (const memberId of userIds) {

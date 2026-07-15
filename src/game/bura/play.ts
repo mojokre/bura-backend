@@ -1,6 +1,8 @@
 import {
   CARD_POINTS,
+  activeSeatsForMode,
   nextSeat,
+  playerCountForMode,
   RANK_ORDER,
   teamOf,
   type BuraDealState,
@@ -148,7 +150,7 @@ function applyMalyutkaLead(
       hands,
       currentTrick: [{ seat: fromSeat, cards }],
       leadSeat: fromSeat,
-      turnSeat: nextSeat(fromSeat),
+      turnSeat: nextSeat(fromSeat, match.config.mode),
       winningSeat: fromSeat,
       pendingSettle: false,
       lastResolved: null,
@@ -232,15 +234,16 @@ export function playCards(
   const hands = { ...deal.hands, [fromSeat]: hand };
   const currentTrick = [...deal.currentTrick, { seat: fromSeat, cards }];
   const winningSeat = winningPlaySeat(currentTrick, deal.trump);
+  const seatsInTrick = playerCountForMode(match.config.mode);
 
-  if (currentTrick.length < 4) {
+  if (currentTrick.length < seatsInTrick) {
     return {
       ...match,
       deal: {
         ...deal,
         hands,
         currentTrick,
-        turnSeat: nextSeat(fromSeat),
+        turnSeat: nextSeat(fromSeat, match.config.mode),
         lastResolved: null,
         pendingSettle: false,
         winningSeat,
@@ -248,7 +251,7 @@ export function playCards(
     };
   }
 
-  const winnerTeam = teamOf(winningSeat);
+  const winnerTeam = teamOf(winningSeat, match.config.mode);
   return {
     ...match,
     deal: {
@@ -294,11 +297,15 @@ export function settleResolvedTrick(match: BuraMatchState): BuraMatchState {
       winnerTeam,
     },
   };
-  nextDeal = refillHandsAfterTrick(nextDeal, winnerSeat, match.config.handSize);
-
-  const allHandsEmpty = ([0, 1, 2, 3] as SeatIndex[]).every(
-    (s) => nextDeal.hands[s].length === 0,
+  nextDeal = refillHandsAfterTrick(
+    nextDeal,
+    winnerSeat,
+    match.config.handSize,
+    match.config.mode,
   );
+
+  const active = activeSeatsForMode(match.config.mode);
+  const allHandsEmpty = active.every((s) => nextDeal.hands[s].length === 0);
   if (allHandsEmpty) {
     return finishDealByTakenPoints({
       ...match,
