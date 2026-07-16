@@ -338,9 +338,6 @@ export function declareBura(
   if (deal.pendingSettle || deal.pendingRaise) {
     throw new Error("ახლა ბურა ვერ გამოცხადდება.");
   }
-  if (deal.currentTrick.length > 0) {
-    throw new Error("ჯერ მაგიდა უნდა იყოს ცარიელი.");
-  }
   if (deal.turnSeat !== fromSeat) {
     throw new Error("არ არის შენი სვლა.");
   }
@@ -349,15 +346,24 @@ export function declareBura(
     throw new Error("ბურა მხოლოდ 5 კოზირით.");
   }
 
+  const hands: Record<SeatIndex, Card[]> = {
+    0: [...deal.hands[0]],
+    1: [...deal.hands[1]],
+    2: [...deal.hands[2]],
+    3: [...deal.hands[3]],
+  };
+  for (const play of deal.currentTrick) {
+    if (play.seat === fromSeat) continue;
+    hands[play.seat] = [...hands[play.seat], ...play.cards];
+  }
+  hands[fromSeat] = [];
+
   const cards = [...hand];
   return {
     ...match,
     deal: {
       ...deal,
-      hands: {
-        ...deal.hands,
-        [fromSeat]: [],
-      },
+      hands,
       currentTrick: [{ seat: fromSeat, cards }],
       turnSeat: fromSeat,
       winningSeat: fromSeat,
@@ -382,11 +388,7 @@ export function autoPlayForSeat(match: BuraMatchState, seat: SeatIndex): BuraMat
   const hand = deal.hands[seat];
   if (hand.length === 0) return match;
 
-  if (
-    deal.currentTrick.length === 0 &&
-    !deal.pendingRaise &&
-    isBuraHand(hand, deal.trump)
-  ) {
+  if (!deal.pendingRaise && isBuraHand(hand, deal.trump)) {
     try {
       return declareBura(match, seat);
     } catch {

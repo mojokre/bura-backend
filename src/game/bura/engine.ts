@@ -504,11 +504,8 @@ export function publicDealView(
     canRespondRaise: canRespond,
     canCounterRaise: canRespond ? counterLevel : null,
     canOfferMalyutka,
-    canDeclareBura:
-      isPlaying &&
-      hasBura &&
-      myTurn &&
-      deal.currentTrick.length === 0,
+    // ბურა beats მალიუტკა — declare on your turn even if opponent already led malyutka.
+    canDeclareBura: isPlaying && hasBura && myTurn,
     buraReveal: deal.buraReveal,
     leadSeat: deal.leadSeat,
     turnSeat: deal.turnSeat,
