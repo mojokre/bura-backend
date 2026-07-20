@@ -2,7 +2,8 @@
 nixPkgs = ["nodejs_22"]
 
 [phases.install]
-cmds = ["npm ci"]
+# Prod installs skip devDependencies; tsc still needs @types/* at build time.
+cmds = ["npm ci --include=dev"]
 
 [phases.build]
 cmds = ["npm run build"]
