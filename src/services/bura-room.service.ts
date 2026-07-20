@@ -22,7 +22,7 @@ import type {
 } from "../game/bura/types.js";
 import { teamOf } from "../game/bura/types.js";
 
-const TURN_MS = 60_000;
+const TURN_MS = 15_000;
 /** Reveal (1.5s) + gather + flip + fly animation on the client. */
 const SETTLE_MS = 3_200;
 /** Time to show round result before next deal (~3s + countdown). */
@@ -520,7 +520,7 @@ export function respondBuraRaise(
     // Counter-raise still waits for a response, so keep the timer paused.
     clearTurnTimer(room);
   } else if (room.match.status === "playing") {
-    // Accepted raise resumes the same turn with a fresh 60s timer.
+    // Accepted raise resumes the same turn with a fresh 15s timer.
     scheduleTurnTimer(room);
   }
   broadcastRoom(room);
