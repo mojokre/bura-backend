@@ -13,7 +13,7 @@ import {
   type Suit,
 } from "./types.js";
 import { isTrump } from "./deck.js";
-import { finishDealByTakenPoints, refillHandsAfterTrick } from "./engine.js";
+import { finishDealByTakenPoints, finishDealWithWinner, refillHandsAfterTrick } from "./engine.js";
 
 function rankValue(rank: Rank): number {
   return RANK_ORDER.length - RANK_ORDER.indexOf(rank);
@@ -271,6 +271,16 @@ export function playCards(
   };
 }
 
+/** Single-seat 5-trump play → round ends as ბურა after the usual collect animation. */
+export function isBuraTrick(
+  trick: Array<{ cards: Card[] }>,
+  trump: Suit,
+): boolean {
+  if (trick.length !== 1) return false;
+  const cards = trick[0]!.cards;
+  return cards.length === 5 && cards.every((c) => c.suit === trump);
+}
+
 export function settleResolvedTrick(match: BuraMatchState): BuraMatchState {
   const deal = match.deal;
   if (!deal?.pendingSettle || !deal.lastResolved) return match;
@@ -281,6 +291,26 @@ export function settleResolvedTrick(match: BuraMatchState): BuraMatchState {
     ...deal.takenByTeam,
     [winnerTeam]: [...deal.takenByTeam[winnerTeam], ...captured],
   };
+
+  if (isBuraTrick(trick, deal.trump)) {
+    return finishDealWithWinner(
+      match,
+      {
+        ...deal,
+        hands: deal.hands,
+        currentTrick: [],
+        takenByTeam,
+        leadSeat: winnerSeat,
+        turnSeat: winnerSeat,
+        winningSeat: winnerSeat,
+        pendingSettle: false,
+        buraReveal: false,
+        lastResolved: { trick, winnerSeat, winnerTeam },
+      },
+      winnerTeam,
+      "bura",
+    );
+  }
 
   let nextDeal: BuraDealState = {
     ...deal,
@@ -321,8 +351,7 @@ export function settleResolvedTrick(match: BuraMatchState): BuraMatchState {
 }
 
 /**
- * Player with 5 trump presses ბურა on their turn: lay all five face-up.
- * Room service waits ~2.8s then scores the round.
+ * Player with 5 trump presses ბურა: lay all five, collect animation, then win the round.
  */
 export function declareBura(
   match: BuraMatchState,
@@ -359,17 +388,24 @@ export function declareBura(
   hands[fromSeat] = [];
 
   const cards = [...hand];
+  const winnerTeam = teamOf(fromSeat, match.config.mode);
+  const trick = [{ seat: fromSeat, cards }];
   return {
     ...match,
     deal: {
       ...deal,
       hands,
-      currentTrick: [{ seat: fromSeat, cards }],
+      currentTrick: trick,
+      leadSeat: fromSeat,
       turnSeat: fromSeat,
       winningSeat: fromSeat,
-      pendingSettle: false,
-      lastResolved: null,
-      buraReveal: true,
+      pendingSettle: true,
+      buraReveal: false,
+      lastResolved: {
+        trick,
+        winnerSeat: fromSeat,
+        winnerTeam,
+      },
     },
   };
 }
