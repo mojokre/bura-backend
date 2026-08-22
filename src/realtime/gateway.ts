@@ -133,6 +133,20 @@ function registerVoiceHandlers(socket: Socket, userId: string) {
       data: body.data,
     });
   });
+
+  socket.on("voice:talking", (payload: unknown) => {
+    const roomId =
+      payload && typeof payload === "object"
+        ? (payload as { talking?: unknown; roomId?: unknown }).roomId
+        : null;
+    const talking =
+      payload && typeof payload === "object"
+        ? Boolean((payload as { talking?: unknown }).talking)
+        : false;
+    if (typeof roomId !== "string" || !roomId) return;
+    if (voiceRoomBySocket.get(socket.id) !== roomId) return;
+    socket.to(voiceChannel(roomId)).emit("voice:talking", { roomId, userId, talking });
+  });
 }
 
 function registerChatHandlers(socket: Socket, userId: string) {

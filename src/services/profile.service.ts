@@ -3,11 +3,19 @@ import { env } from "../config/env.js";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { AppError } from "../lib/errors.js";
 import { usernameToAuthEmail } from "../lib/username.js";
+import { leavePrivateLobbyIfAny } from "./friends-table.service.js";
+import {
+  isUserInGame,
+  leaveGameRoom,
+  leavePublicTableIfAny,
+} from "./tables.service.js";
 
 type ProfileRow = {
   id: string;
-  username: string;
+  username: string | null;
   icon_path?: string | null;
+  display_name?: string | null;
+  auth_provider?: string | null;
   pending_ad_after_match?: boolean | null;
   created_at: string;
 };
@@ -15,7 +23,9 @@ type ProfileRow = {
 export async function getMe(userId: string) {
   const withIcon = await supabaseAdmin
     .from("profiles")
-    .select("id, username, icon_path, pending_ad_after_match, created_at")
+    .select(
+      "id, username, icon_path, display_name, auth_provider, pending_ad_after_match, created_at",
+    )
     .eq("id", userId)
     .single<ProfileRow>();
 
@@ -49,12 +59,19 @@ export async function getMe(userId: string) {
   return {
     id: profile.id,
     username: profile.username,
+    displayName: profile.display_name ?? null,
+    needsUsername: !profile.username,
     iconPath: profile.icon_path ?? null,
-    iconUrl: profile.icon_path
-      ? await resolveIconUrl(profile.icon_path)
-      : getDefaultProfileIconUrl(profile.username),
-    canSetIcon: false,
+    iconUrl: profile.username
+      ? profile.icon_path
+        ? await resolveIconUrl(profile.icon_path)
+        : getDefaultProfileIconUrl(profile.username)
+      : profile.icon_path
+        ? await resolveIconUrl(profile.icon_path)
+        : getDefaultProfileIconUrl(),
+    canSetIcon: Boolean(profile.username),
     pendingAdAfterMatch: Boolean(profile.pending_ad_after_match),
+    authProvider: profile.auth_provider ?? "password",
     createdAt: profile.created_at,
   };
 }
@@ -227,12 +244,16 @@ export async function updateUsername(userId: string, nextUsernameRaw: string) {
 
   const { data: me, error: meError } = await supabaseAdmin
     .from("profiles")
-    .select("id, username")
+    .select("id, username, auth_provider")
     .eq("id", userId)
-    .single<{ id: string; username: string }>();
+    .single<{ id: string; username: string | null; auth_provider?: string | null }>();
 
-  if (meError || !me) {
-    throw new AppError(500, "PROFILE_MISSING", "პროფილი ვერ მოიძებნა.");
+  if (meError || !me || !me.username) {
+    throw new AppError(
+      403,
+      "USERNAME_NOT_SET",
+      "ჯერ აირჩიე მომხმარებლის სახელი.",
+    );
   }
 
   if (me.username === nextUsername) {
@@ -254,11 +275,19 @@ export async function updateUsername(userId: string, nextUsernameRaw: string) {
 
   const oldDefaultPath = `${me.username}.png`;
   const nextDefaultPath = `${nextUsername}.png`;
+  const isPasswordAuth = (me.auth_provider ?? "password") === "password";
 
-  const { error: authError } = await supabaseAdmin.auth.admin.updateUserById(userId, {
-    email: usernameToAuthEmail(nextUsername),
+  const authPatch: { email?: string; user_metadata: { username: string } } = {
     user_metadata: { username: nextUsername },
-  });
+  };
+  if (isPasswordAuth) {
+    authPatch.email = usernameToAuthEmail(nextUsername);
+  }
+
+  const { error: authError } = await supabaseAdmin.auth.admin.updateUserById(
+    userId,
+    authPatch,
+  );
 
   if (authError) {
     if (/already|exists|registered/i.test(authError.message)) {
@@ -291,6 +320,62 @@ export async function updateUsername(userId: string, nextUsernameRaw: string) {
   };
 }
 
+/** First-time username for OAuth / users without username yet. */
+export async function setInitialUsername(userId: string, nextUsernameRaw: string) {
+  const nextUsername = usernameSchema.parse(nextUsernameRaw);
+
+  const { data: me, error: meError } = await supabaseAdmin
+    .from("profiles")
+    .select("id, username, auth_provider")
+    .eq("id", userId)
+    .single<{ id: string; username: string | null; auth_provider?: string | null }>();
+
+  if (meError || !me) {
+    throw new AppError(500, "PROFILE_MISSING", "პროფილი ვერ მოიძებნა.");
+  }
+
+  if (me.username) {
+    throw new AppError(
+      409,
+      "USERNAME_ALREADY_SET",
+      "მომხმარებლის სახელი უკვე გაქვს.",
+    );
+  }
+
+  const { data: existing } = await supabaseAdmin
+    .from("profiles")
+    .select("id")
+    .eq("username", nextUsername)
+    .maybeSingle<{ id: string }>();
+
+  if (existing) {
+    throw new AppError(409, "USERNAME_TAKEN", "ეს მომხმარებლის სახელი უკვე დაკავებულია.");
+  }
+
+  const { error: profileError } = await supabaseAdmin
+    .from("profiles")
+    .update({
+      username: nextUsername,
+      username_set_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", userId);
+
+  if (profileError) {
+    throw new AppError(500, "USERNAME_UPDATE_FAILED", "მომხმარებლის სახელის შენახვა ვერ მოხერხდა.");
+  }
+
+  await supabaseAdmin.auth.admin.updateUserById(userId, {
+    user_metadata: { username: nextUsername },
+  });
+
+  return {
+    username: nextUsername,
+    iconUrl: getDefaultProfileIconUrl(nextUsername),
+    needsUsername: false,
+  };
+}
+
 export async function uploadProfileImage(
   userId: string,
   file: { buffer: Buffer; originalName: string; contentType: string },
@@ -307,14 +392,16 @@ export async function uploadProfileImage(
     .from("profiles")
     .select("username")
     .eq("id", userId)
-    .single<{ username: string }>();
+    .single<{ username: string | null }>();
 
   if (profileError || !profile) {
     throw new AppError(500, "PROFILE_MISSING", "პროფილი ვერ მოიძებნა.");
   }
 
   const ext = getFileExtension(file.originalName);
-  const objectPath = `${profile.username}.${ext}`;
+  const objectPath = profile.username
+    ? `${profile.username}.${ext}`
+    : `${userId}/avatar.${ext}`;
 
   const { error } = await supabaseAdmin.storage
     .from(env.SUPABASE_STORAGE_BUCKET)
@@ -343,5 +430,44 @@ export async function uploadProfileImage(
   return {
     iconUrl: await resolveIconUrl(objectPath),
   };
+}
+
+/** Permanently delete the user's account and linked database rows. */
+export async function deleteAccount(userId: string) {
+  if (isUserInGame(userId)) {
+    throw new AppError(
+      409,
+      "ACCOUNT_IN_USE",
+      "ჯერ გახვიე მიმდინარე თამაში, შემდეგ წაშალე ანგარიში.",
+    );
+  }
+
+  leavePublicTableIfAny(userId);
+  leavePrivateLobbyIfAny(userId);
+  leaveGameRoom(userId);
+
+  const { data: profile } = await supabaseAdmin
+    .from("profiles")
+    .select("icon_path")
+    .eq("id", userId)
+    .maybeSingle<{ icon_path: string | null }>();
+
+  if (profile?.icon_path) {
+    await supabaseAdmin.storage
+      .from(env.SUPABASE_STORAGE_BUCKET)
+      .remove([profile.icon_path])
+      .catch(() => undefined);
+  }
+
+  const { error } = await supabaseAdmin.auth.admin.deleteUser(userId);
+  if (error) {
+    throw new AppError(
+      500,
+      "ACCOUNT_DELETE_FAILED",
+      "ანგარიშის წაშლა ვერ მოხერხდა.",
+    );
+  }
+
+  return { ok: true as const };
 }
 

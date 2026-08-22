@@ -7,9 +7,11 @@ import {
   getMe,
   listSuggestedIcons,
   selectIcon,
+  setInitialUsername,
   updateUsername,
   uploadIconToStorage,
   uploadProfileImage,
+  deleteAccount,
 } from "../services/profile.service.js";
 
 export const profileRouter = Router();
@@ -86,6 +88,25 @@ profileRouter.post(
   },
 );
 
+profileRouter.post("/username/set-initial", requireAuth, async (req, res) => {
+  try {
+    const userId = (req as any).userId as string;
+    const { username } = req.body as { username?: string };
+
+    if (!username) {
+      return res.status(400).json({
+        code: "VALIDATION_ERROR",
+        message: "username აუცილებელია.",
+      });
+    }
+
+    const result = await setInitialUsername(userId, username);
+    return res.json(result);
+  } catch (error) {
+    return sendProfileError(res, error);
+  }
+});
+
 profileRouter.patch("/username", requireAuth, async (req, res) => {
   try {
     const userId = (req as any).userId as string;
@@ -133,6 +154,16 @@ profileRouter.post(
     }
   },
 );
+
+profileRouter.delete("/account", requireAuth, async (req, res) => {
+  try {
+    const userId = (req as any).userId as string;
+    const result = await deleteAccount(userId);
+    return res.json(result);
+  } catch (error) {
+    return sendProfileError(res, error);
+  }
+});
 
 function sendProfileError(res: import("express").Response, error: unknown) {
   if (error instanceof ZodError) {

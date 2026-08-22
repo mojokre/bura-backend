@@ -539,4 +539,13 @@ export function destroyBuraLiveRoom(roomId: string) {
   rooms.delete(roomId);
 }
 
+/** Active matches in progress (excludes finished cleanup window). */
+export function countActiveLiveGames(): number {
+  let count = 0;
+  for (const room of rooms.values()) {
+    if (room.match.status !== "finished") count++;
+  }
+  return count;
+}
+
 export type { Card, RaiseLevel };

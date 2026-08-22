@@ -41,6 +41,7 @@ const envInput = {
   SUPABASE_PROFILE_ICONS_PREFIX: cleanEnv(
     process.env.SUPABASE_PROFILE_ICONS_PREFIX,
   ),
+  MOBILE_OAUTH_REDIRECT_URL: cleanEnv(process.env.MOBILE_OAUTH_REDIRECT_URL),
 };
 
 const envSchema = z.object({
@@ -60,6 +61,11 @@ const envSchema = z.object({
   // Optional prefix inside the bucket where suggested icons live.
   // If empty, we list directly from the bucket root.
   SUPABASE_PROFILE_ICONS_PREFIX: z.string().default(""),
+  /** HTTPS OAuth callback on thebura.online (also whitelist in Supabase Redirect URLs). */
+  MOBILE_OAUTH_REDIRECT_URL: z
+    .string()
+    .url()
+    .default("https://thebura.online/auth/callback"),
 });
 
 const parsed = envSchema.safeParse(envInput);

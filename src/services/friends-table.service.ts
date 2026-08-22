@@ -1,4 +1,5 @@
 import { z } from "zod";
+import bcrypt from "bcrypt";
 import { AppError } from "../lib/errors.js";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { emitToUser, emitBroadcast } from "../realtime/gateway.js";
@@ -55,6 +56,9 @@ type PrivateLobbyInternal = {
   malyutkaMode: MalyutkaMode;
   matchTo: number;
   mode: TableMode;
+  /** password-protected lobby */
+  joinPasswordHash?: string;
+  joinPasswordKey?: string;
 };
 
 const MAX_PLAYERS_2V2 = 4;
@@ -76,6 +80,24 @@ const joinTeamSchema = z.object({
 
 const privateLobbies = new Map<string, PrivateLobbyInternal>();
 const privateLobbyByUser = new Map<string, string>();
+/** Normalized join password → lobby id (active password lobbies only). */
+const privateLobbyByPassword = new Map<string, string>();
+
+const passwordCreateSchema = z.object({
+  game: z.literal("bura"),
+  joinPassword: z.string().trim().min(4).max(32),
+  malyutkaMode: tableRulesSchema.shape.malyutkaMode,
+  matchTo: tableRulesSchema.shape.matchTo,
+  mode: tableModeSchema.optional().default("2v2"),
+});
+
+const passwordJoinSchema = z.object({
+  joinPassword: z.string().trim().min(4).max(32),
+});
+
+function normalizeJoinPassword(raw: string) {
+  return raw.trim().toLowerCase();
+}
 
 async function resolveUser(userId: string) {
   const { data, error } = await supabaseAdmin
@@ -90,8 +112,8 @@ async function resolveUser(userId: string) {
 
   return {
     id: data.id,
-    username: data.username,
-    iconUrl: await getProfileIconUrl(data.username, data.icon_path),
+    username: data.username ?? data.id.slice(0, 8),
+    iconUrl: await getProfileIconUrl(data.username ?? "", data.icon_path),
   };
 }
 
@@ -165,6 +187,9 @@ function clearUserPrivateLobby(userId: string) {
 function destroyLobby(lobbyId: string) {
   const lobby = privateLobbies.get(lobbyId);
   if (!lobby) return;
+  if (lobby.joinPasswordKey) {
+    privateLobbyByPassword.delete(lobby.joinPasswordKey);
+  }
   for (const seat of lobby.seats.values()) {
     if (privateLobbyByUser.get(seat.id) === lobbyId) {
       clearUserPrivateLobby(seat.id);
@@ -182,6 +207,142 @@ export function getPrivateLobbyForUser(userId: string): PrivateLobby | null {
   if (!lobbyId) return null;
   const lobby = privateLobbies.get(lobbyId);
   if (!lobby) return null;
+  return serializeLobby(lobby);
+}
+
+export async function createPasswordPrivateTable(hostId: string, body: unknown) {
+  const parsed = passwordCreateSchema.safeParse(body);
+  if (!parsed.success) {
+    throw new AppError(
+      400,
+      "VALIDATION_ERROR",
+      "პაროლი (4–32), რეჟიმი და წესები სავალდებულოა.",
+    );
+  }
+
+  const { game, joinPassword, malyutkaMode, matchTo } = parsed.data;
+  const mode: TableMode = parsed.data.mode === "1v1" ? "1v1" : "2v2";
+  const maxPlayers = mode === "1v1" ? MAX_PLAYERS_1V1 : MAX_PLAYERS_2V2;
+  const key = normalizeJoinPassword(joinPassword);
+
+  if (privateLobbyByPassword.has(key)) {
+    throw new AppError(
+      409,
+      "PASSWORD_IN_USE",
+      "ეს პაროლი უკვე გამოიყენება — აირჩიე სხვა.",
+    );
+  }
+
+  if (isUserInPrivateLobby(hostId) || isUserInGame(hostId)) {
+    throw new AppError(409, "ALREADY_IN_TABLE", "უკვე ხარ მაგიდაზე ან ლობიში.");
+  }
+
+  const host = await resolveUser(hostId);
+  leavePublicTableIfAny(hostId);
+
+  const lobbyId = `private_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+  const joinPasswordHash = await bcrypt.hash(joinPassword, 10);
+
+  const seats = new Map<string, PrivateSeat>();
+  seats.set(host.id, {
+    ...host,
+    status: "accepted",
+    isHost: true,
+    team: 0,
+  });
+
+  const lobby: PrivateLobbyInternal = {
+    id: lobbyId,
+    game,
+    hostId,
+    status: "waiting",
+    maxPlayers,
+    seats,
+    roomId: null,
+    createdAt: Date.now(),
+    malyutkaMode,
+    matchTo,
+    mode,
+    joinPasswordHash,
+    joinPasswordKey: key,
+  };
+
+  privateLobbies.set(lobbyId, lobby);
+  privateLobbyByUser.set(hostId, lobbyId);
+  privateLobbyByPassword.set(key, lobbyId);
+
+  const serialized = serializeLobby(lobby);
+  emitToUser(hostId, "friends-table:updated", { lobby: serialized });
+
+  return serialized;
+}
+
+export async function joinPasswordPrivateTable(userId: string, body: unknown) {
+  const parsed = passwordJoinSchema.safeParse(body);
+  if (!parsed.success) {
+    throw new AppError(400, "VALIDATION_ERROR", "შეიყვანე პაროლი.");
+  }
+
+  const key = normalizeJoinPassword(parsed.data.joinPassword);
+  const lobbyId = privateLobbyByPassword.get(key);
+  if (!lobbyId) {
+    throw new AppError(404, "LOBBY_NOT_FOUND", "მაგიდა ამ პაროლით ვერ მოიძებნა.");
+  }
+
+  const lobby = privateLobbies.get(lobbyId);
+  if (!lobby || !lobby.joinPasswordHash) {
+    throw new AppError(404, "LOBBY_NOT_FOUND", "მაგიდა ვერ მოიძებნა.");
+  }
+
+  if (lobby.status === "started") {
+    throw new AppError(409, "ALREADY_STARTED", "თამაში უკვე დაიწყო.");
+  }
+
+  const ok = await bcrypt.compare(parsed.data.joinPassword, lobby.joinPasswordHash);
+  if (!ok) {
+    throw new AppError(401, "WRONG_PASSWORD", "პაროლი არასწორია.");
+  }
+
+  if (lobby.seats.has(userId)) {
+    return serializeLobby(lobby);
+  }
+
+  if (isUserInPrivateLobby(userId) || isUserInGame(userId)) {
+    throw new AppError(409, "ALREADY_IN_TABLE", "უკვე ხარ მაგიდაზე ან ლობიში.");
+  }
+
+  if (acceptedCount(lobby) >= lobby.maxPlayers) {
+    throw new AppError(409, "TABLE_FULL", "მაგიდა სავსეა.");
+  }
+
+  const user = await resolveUser(userId);
+  leavePublicTableIfAny(userId);
+
+  const team: 0 | 1 =
+    lobby.mode === "1v1"
+      ? 1
+      : acceptedCount(lobby) % 2 === 0
+        ? 0
+        : 1;
+
+  lobby.seats.set(userId, {
+    ...user,
+    status: "accepted",
+    isHost: false,
+    team,
+  });
+
+  privateLobbyByUser.set(userId, lobbyId);
+  refreshLobbyStatus(lobby);
+
+  emitLobbyToMembers(lobby, "friends-table:updated", {
+    message: `${user.username} შეუერთდა პირად მაგიდას`,
+  });
+
+  if (lobby.status === "ready" && lobby.hostId === userId) {
+    // guest joined last — host still starts manually
+  }
+
   return serializeLobby(lobby);
 }
 

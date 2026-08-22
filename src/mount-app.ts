@@ -3,10 +3,13 @@ import type { Server as HttpServer } from "http";
 import { env } from "./config/env.js";
 import { initRealtime } from "./realtime/gateway.js";
 import { apiRouter } from "./routes/index.js";
+import { initDefaultPublicTables } from "./services/tables.service.js";
 
 export function mountApp(app: Express, httpServer: HttpServer) {
   app.use(express.json({ limit: "32kb" }));
   app.use("/api", apiRouter);
+
+  initDefaultPublicTables();
 
   app.use((_req, res) => {
     res.status(404).json({

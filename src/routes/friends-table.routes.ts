@@ -1,11 +1,14 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/requireAuth.js";
+import { requireUsername } from "../middleware/requireUsername.js";
 import { AppError } from "../lib/errors.js";
 import {
   createFriendsTable,
+  createPasswordPrivateTable,
   getFriendsTable,
   getPrivateLobbyForUser,
   joinFriendsTableTeam,
+  joinPasswordPrivateTable,
   leaveFriendsTable,
   respondFriendsTableInvite,
   startFriendsTable,
@@ -39,10 +42,30 @@ friendsTableRouter.get("/mine", requireAuth, async (req, res) => {
   }
 });
 
-friendsTableRouter.post("/create", requireAuth, async (req, res) => {
+friendsTableRouter.post("/create", requireAuth, requireUsername, async (req, res) => {
   try {
     const userId = (req as any).userId as string;
     const lobby = await createFriendsTable(userId, req.body);
+    return res.json({ lobby });
+  } catch (error) {
+    return handleError(res, error);
+  }
+});
+
+friendsTableRouter.post("/create-password", requireAuth, requireUsername, async (req, res) => {
+  try {
+    const userId = (req as any).userId as string;
+    const lobby = await createPasswordPrivateTable(userId, req.body);
+    return res.json({ lobby });
+  } catch (error) {
+    return handleError(res, error);
+  }
+});
+
+friendsTableRouter.post("/join-password", requireAuth, requireUsername, async (req, res) => {
+  try {
+    const userId = (req as any).userId as string;
+    const lobby = await joinPasswordPrivateTable(userId, req.body);
     return res.json({ lobby });
   } catch (error) {
     return handleError(res, error);

@@ -9,6 +9,12 @@ import {
   registerSchema,
   registerUser,
 } from "../services/auth.service.js";
+import {
+  completeOAuthSession,
+  getOAuthAuthorizeUrl,
+  oauthProviderSchema,
+  oauthSessionSchema,
+} from "../services/oauth.service.js";
 
 export const authRouter = Router();
 
@@ -37,6 +43,32 @@ authRouter.post("/refresh", async (req, res) => {
     const body = refreshSchema.parse(req.body);
     const session = await refreshSession(body);
     return res.status(200).json({ session });
+  } catch (error) {
+    return sendAuthError(res, error);
+  }
+});
+
+/** GET /api/auth/oauth/:provider/url?redirectTo=bura://auth/callback */
+authRouter.get("/oauth/:provider/url", async (req, res) => {
+  try {
+    const provider = oauthProviderSchema.parse(req.params.provider);
+    const redirectTo =
+      typeof req.query.redirectTo === "string" ? req.query.redirectTo : undefined;
+    const result = await getOAuthAuthorizeUrl(provider, redirectTo);
+    return res.json(result);
+  } catch (error) {
+    return sendAuthError(res, error);
+  }
+});
+
+/** POST /api/auth/oauth/session — after in-app browser OAuth redirect */
+authRouter.post("/oauth/session", async (req, res) => {
+  try {
+    const body = oauthSessionSchema.parse(req.body);
+    const provider =
+      typeof req.body?.provider === "string" ? req.body.provider : undefined;
+    const result = await completeOAuthSession(body, provider);
+    return res.status(200).json(result);
   } catch (error) {
     return sendAuthError(res, error);
   }

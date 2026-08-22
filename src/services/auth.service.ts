@@ -113,6 +113,7 @@ export async function registerUser(input: RegisterInput) {
       user: {
         id: profile.id,
         username: profile.username,
+        needsUsername: false,
         createdAt: profile.created_at,
         iconPath: profile.icon_path ?? null,
         iconUrl: await getProfileIconUrl(profile.username, profile.icon_path),
@@ -127,6 +128,7 @@ export async function registerUser(input: RegisterInput) {
     user: {
       id: profile.id,
       username: profile.username,
+      needsUsername: false,
       createdAt: profile.created_at,
       iconPath: profile.icon_path ?? null,
       iconUrl: await getProfileIconUrl(profile.username, profile.icon_path),
@@ -213,6 +215,7 @@ export async function loginUser(input: LoginInput) {
     user: {
       id: profile.id,
       username: profile.username,
+      needsUsername: false,
       createdAt: profile.created_at,
       iconPath: profile.icon_path ?? null,
       iconUrl: await getProfileIconUrl(profile.username, profile.icon_path),

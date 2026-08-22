@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/requireAuth.js";
+import { requireUsername } from "../middleware/requireUsername.js";
 import { AppError } from "../lib/errors.js";
 import {
   createPublicTable,
@@ -14,12 +15,17 @@ import { isUserInPrivateLobby } from "../services/friends-table.service.js";
 import { emitToUser } from "../realtime/gateway.js";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { markPendingAdsForUsers } from "../services/ads.service.js";
+import { countActiveLiveGames } from "../services/bura-room.service.js";
 
 export const tablesRouter = Router();
 
 const gameQuerySchema = z.object({
   game: z.literal("bura"),
   mode: z.enum(["1v1", "2v2"]).optional(),
+});
+
+tablesRouter.get("/live-count", (_req, res) => {
+  return res.json({ count: countActiveLiveGames() });
 });
 
 tablesRouter.get("/public", (req, res) => {
@@ -42,7 +48,7 @@ tablesRouter.get("/active-game", requireAuth, (req, res) => {
   return res.json({ roomId });
 });
 
-tablesRouter.post("/public/create", requireAuth, async (req, res) => {
+tablesRouter.post("/public/create", requireAuth, requireUsername, async (req, res) => {
   try {
     const userId = (req as any).userId as string;
     const result = await createPublicTable(userId, req.body);
@@ -63,7 +69,7 @@ tablesRouter.post("/public/create", requireAuth, async (req, res) => {
   }
 });
 
-tablesRouter.post("/:tableId/join", requireAuth, async (req, res) => {
+tablesRouter.post("/:tableId/join", requireAuth, requireUsername, async (req, res) => {
   try {
     const userId = (req as any).userId as string;
     const { tableId } = req.params;

@@ -17,6 +17,49 @@ import {
 
 export type GameType = "bura";
 
+export const DEFAULT_PUBLIC_TABLE_IDS = {
+  "1v1": {
+    turn: "default_bura_1v1",
+    anytime: "default_bura_1v1_anytime",
+  },
+  "2v2": {
+    turn: "default_bura_2v2",
+    anytime: "default_bura_2v2_anytime",
+  },
+} as const;
+
+const MAX_PLAYERS_2V2 = 4;
+const MAX_PLAYERS_1V1 = 2;
+
+const DEFAULT_MALYUTKA_MODES: MalyutkaMode[] = ["turn", "anytime"];
+const DEFAULT_TABLE_MODES: TableMode[] = ["1v1", "2v2"];
+
+const DEFAULT_PUBLIC_TABLES: Array<{
+  id: string;
+  mode: TableMode;
+  malyutkaMode: MalyutkaMode;
+  matchTo: number;
+  maxPlayers: number;
+  label: string;
+}> = DEFAULT_TABLE_MODES.flatMap((mode) =>
+  DEFAULT_MALYUTKA_MODES.map((malyutkaMode) => {
+    const maxPlayers = mode === "1v1" ? MAX_PLAYERS_1V1 : MAX_PLAYERS_2V2;
+    const malyutkaShort = malyutkaMode === "turn" ? "რიგით" : "ურიგოდ";
+    const id =
+      malyutkaMode === "turn"
+        ? DEFAULT_PUBLIC_TABLE_IDS[mode].turn
+        : DEFAULT_PUBLIC_TABLE_IDS[mode].anytime;
+    return {
+      id,
+      mode,
+      malyutkaMode,
+      matchTo: 11,
+      maxPlayers,
+      label: `${mode} · ${malyutkaShort} · 11`,
+    };
+  }),
+);
+
 export type PublicTable = {
   id: string;
   game: GameType;
@@ -27,6 +70,7 @@ export type PublicTable = {
   malyutkaMode: MalyutkaMode;
   matchTo: number;
   mode: TableMode;
+  isDefault?: boolean;
   joinedUsers: Array<{
     id: string;
     username: string;
@@ -46,17 +90,15 @@ type PublicTableMeta = {
   matchTo: number;
   mode: TableMode;
   createdAt: number;
+  isDefault?: boolean;
 };
 
-type Room = {
+type LiveRoom = {
   roomId: string;
   tableId: string;
   game: GameType;
   createdAt: number;
 };
-
-const MAX_PLAYERS_2V2 = 4;
-const MAX_PLAYERS_1V1 = 2;
 
 const joinParamsSchema = z.object({
   tableId: z.string().min(1),
@@ -64,10 +106,47 @@ const joinParamsSchema = z.object({
 
 const createPublicSchema = tableRulesSchema;
 
-const rooms = new Map<string, Room>();
+const liveRooms = new Map<string, LiveRoom>();
 const publicTables = new Map<string, PublicTableMeta>();
 const tableMembers = new Map<string, Map<string, TableMember>>();
+const waitingTableByUser = new Map<string, string>();
+/** Live Bura match room ids only — not public-table lobby seats. */
 const currentRoomByUser = new Map<string, string>();
+
+function ensureDefaultPublicTables() {
+  for (const d of DEFAULT_PUBLIC_TABLES) {
+    if (!publicTables.has(d.id)) {
+      publicTables.set(d.id, {
+        id: d.id,
+        game: "bura",
+        hostId: "system",
+        label: d.label,
+        maxPlayers: d.maxPlayers,
+        malyutkaMode: d.malyutkaMode,
+        matchTo: d.matchTo,
+        mode: d.mode,
+        createdAt: 0,
+        isDefault: true,
+      });
+    } else {
+      const meta = publicTables.get(d.id)!;
+      meta.isDefault = true;
+      meta.label = d.label;
+      meta.malyutkaMode = d.malyutkaMode;
+      meta.matchTo = d.matchTo;
+      meta.mode = d.mode;
+      meta.maxPlayers = d.maxPlayers;
+    }
+    if (!tableMembers.has(d.id)) {
+      tableMembers.set(d.id, new Map());
+    }
+  }
+}
+
+/** Seed permanent lobby tables on server boot. */
+export function initDefaultPublicTables() {
+  ensureDefaultPublicTables();
+}
 
 function getTableMembers(tableId: string): TableMember[] {
   return Array.from(tableMembers.get(tableId)?.values() ?? []);
@@ -85,6 +164,7 @@ function serializePublicTable(meta: PublicTableMeta): PublicTable {
     malyutkaMode: meta.malyutkaMode,
     matchTo: meta.matchTo,
     mode: meta.mode,
+    isDefault: meta.isDefault,
     joinedUsers: joined,
   };
 }
@@ -93,10 +173,21 @@ export function getPublicTables(
   game: GameType,
   mode?: TableMode,
 ): PublicTable[] {
+  ensureDefaultPublicTables();
   return Array.from(publicTables.values())
     .filter((t) => t.game === game)
     .filter((t) => (mode ? t.mode === mode : true))
-    .sort((a, b) => b.createdAt - a.createdAt)
+    .sort((a, b) => {
+      if (Boolean(a.isDefault) !== Boolean(b.isDefault)) {
+        return a.isDefault ? -1 : 1;
+      }
+      if (a.isDefault && b.isDefault) {
+        if (a.malyutkaMode !== b.malyutkaMode) {
+          return a.malyutkaMode === "turn" ? -1 : 1;
+        }
+      }
+      return b.createdAt - a.createdAt;
+    })
     .map(serializePublicTable);
 }
 
@@ -118,44 +209,44 @@ async function resolveUser(userId: string) {
   };
 }
 
-function leaveCurrentTable(userId: string): GameType | null {
-  const roomId = currentRoomByUser.get(userId);
-  if (!roomId) return null;
+function leaveWaitingTable(userId: string): GameType | null {
+  const tableId = waitingTableByUser.get(userId);
+  if (!tableId) return null;
 
-  const room = rooms.get(roomId);
-  let leftGame: GameType | null = null;
+  waitingTableByUser.delete(userId);
+  const members = tableMembers.get(tableId);
+  members?.delete(userId);
 
-  if (room) {
-    leftGame = room.game;
-    const members = tableMembers.get(room.tableId);
-    members?.delete(userId);
-    if (members && members.size === 0) {
-      tableMembers.delete(room.tableId);
-      publicTables.delete(room.tableId);
-    } else if (members) {
-      // If host left before start, promote next member.
-      const meta = publicTables.get(room.tableId);
-      if (meta && meta.hostId === userId) {
-        const nextHost = members.values().next().value as TableMember | undefined;
-        if (nextHost) meta.hostId = nextHost.id;
-      }
+  const meta = publicTables.get(tableId);
+  if (members && members.size === 0) {
+    tableMembers.set(tableId, new Map());
+    if (meta && !meta.isDefault) {
+      publicTables.delete(tableId);
+      tableMembers.delete(tableId);
     }
+  } else if (members && meta && meta.hostId === userId) {
+    const nextHost = members.values().next().value as TableMember | undefined;
+    if (nextHost) meta.hostId = nextHost.id;
   }
 
-  currentRoomByUser.delete(userId);
-
-  const roomStillUsed = Array.from(currentRoomByUser.values()).includes(roomId);
-  if (!roomStillUsed) {
-    rooms.delete(roomId);
-  }
-
-  return leftGame;
+  return meta?.game ?? "bura";
 }
 
 function notifyTablesUpdated(...games: Array<GameType | null | undefined>) {
   const unique = new Set(games.filter((game): game is GameType => Boolean(game)));
   for (const game of unique) {
     emitBroadcast("tables:updated", { game });
+  }
+}
+
+function assertNotInLiveGame(userId: string) {
+  const liveRoomId = currentRoomByUser.get(userId);
+  if (liveRoomId && getBuraLiveRoom(liveRoomId)) {
+    throw new AppError(
+      409,
+      "ALREADY_IN_GAME",
+      "ჯერ დაასრულე მიმდინარე თამაში.",
+    );
   }
 }
 
@@ -169,20 +260,10 @@ export async function createPublicTable(userId: string, body: unknown) {
     );
   }
 
-  // Anyone can create — leave waiting seats first. Block only mid-match.
-  const existingRoomId = currentRoomByUser.get(userId);
-  if (existingRoomId && getBuraLiveRoom(existingRoomId)) {
-    throw new AppError(
-      409,
-      "ALREADY_IN_GAME",
-      "ჯერ დაასრულე მიმდინარე თამაში.",
-    );
-  }
-  if (existingRoomId) {
-    leaveCurrentTable(userId);
-  }
+  ensureDefaultPublicTables();
+  assertNotInLiveGame(userId);
+  leaveWaitingTable(userId);
 
-  // Soft-leave friends lobby if sitting there (exported helper avoids circular import issues).
   try {
     const { leavePrivateLobbyIfAny } = await import("./friends-table.service.js");
     leavePrivateLobbyIfAny(userId);
@@ -209,26 +290,23 @@ export async function createPublicTable(userId: string, body: unknown) {
     matchTo,
     mode: tableMode,
     createdAt: Date.now(),
+    isDefault: false,
   };
   publicTables.set(tableId, meta);
 
   const members = new Map<string, TableMember>();
   members.set(user.id, user);
   tableMembers.set(tableId, members);
-
-  const roomId = `room_${tableId}`;
-  rooms.set(roomId, {
-    roomId,
-    tableId,
-    game: "bura",
-    createdAt: Date.now(),
-  });
-  currentRoomByUser.set(user.id, roomId);
+  waitingTableByUser.set(user.id, tableId);
 
   notifyTablesUpdated("bura");
   emitBroadcast("presence:updated", {});
 
-  return { table: serializePublicTable(meta), roomId, started: false as const };
+  return {
+    table: serializePublicTable(meta),
+    roomId: null,
+    started: false as const,
+  };
 }
 
 export async function joinPublicTable(userId: string, tableId: string) {
@@ -237,27 +315,27 @@ export async function joinPublicTable(userId: string, tableId: string) {
     throw new AppError(400, "INVALID_TABLE", "არასწორი მაგიდა.");
   }
 
+  ensureDefaultPublicTables();
+
   const table = publicTables.get(tableId);
   if (!table) {
     throw new AppError(404, "TABLE_NOT_FOUND", "მაგიდა ვერ მოიძებნა.");
   }
 
   const user = await resolveUser(userId);
-  const existing = tableMembers.get(tableId) ?? new Map<string, TableMember>();
+  const members = tableMembers.get(tableId) ?? new Map<string, TableMember>();
 
-  if (existing.has(user.id)) {
-    const roomId = currentRoomByUser.get(user.id);
-    if (roomId) {
-      return {
-        roomId,
-        started: Boolean(getBuraLiveRoom(roomId)),
-      };
+  if (members.has(user.id)) {
+    const liveRoomId = currentRoomByUser.get(user.id);
+    if (liveRoomId && getBuraLiveRoom(liveRoomId)) {
+      return { roomId: liveRoomId, started: true };
     }
+    return { roomId: null, started: false };
   }
 
-  const leftGame = leaveCurrentTable(user.id);
+  assertNotInLiveGame(user.id);
+  const leftGame = leaveWaitingTable(user.id);
 
-  const members = tableMembers.get(tableId) ?? new Map<string, TableMember>();
   if (members.size >= table.maxPlayers) {
     notifyTablesUpdated(leftGame);
     throw new AppError(409, "TABLE_FULL", "მაგიდა სავსეა.");
@@ -265,43 +343,47 @@ export async function joinPublicTable(userId: string, tableId: string) {
 
   members.set(user.id, user);
   tableMembers.set(tableId, members);
-
-  let roomId =
-    Array.from(rooms.values()).find((r) => r.tableId === tableId)?.roomId ??
-    null;
-  if (!roomId) {
-    roomId = `room_${tableId}_${Date.now()}`;
-    rooms.set(roomId, {
-      roomId,
-      tableId,
-      game: table.game,
-      createdAt: Date.now(),
-    });
-  }
-  currentRoomByUser.set(user.id, roomId);
+  waitingTableByUser.set(user.id, tableId);
 
   let started = false;
+  let liveRoomId: string | null = null;
+
   if (members.size >= table.maxPlayers && table.game === "bura") {
     const userIds = Array.from(members.keys());
+    liveRoomId = `live_${tableId}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+
     await createBuraLiveRoom({
-      roomId,
+      roomId: liveRoomId,
       game: "bura",
       userIds,
       matchTo: table.matchTo,
       malyutkaMode: table.malyutkaMode,
       mode: table.mode,
     });
-    started = true;
+
+    liveRooms.set(liveRoomId, {
+      roomId: liveRoomId,
+      tableId,
+      game: table.game,
+      createdAt: Date.now(),
+    });
+
     for (const memberId of userIds) {
-      emitToUser(memberId, "public-table:started", { roomId, tableId });
+      waitingTableByUser.delete(memberId);
+      currentRoomByUser.set(memberId, liveRoomId);
+      emitToUser(memberId, "public-table:started", {
+        roomId: liveRoomId,
+        tableId,
+      });
     }
-    // Lobby row disappears once the match starts.
-    publicTables.delete(tableId);
+
+    tableMembers.set(tableId, new Map());
+    started = true;
   }
 
   notifyTablesUpdated(table.game, leftGame);
   emitBroadcast("presence:updated", {});
-  return { roomId, started };
+  return { roomId: liveRoomId, started };
 }
 
 export async function leavePublicTable(userId: string, tableId: string) {
@@ -310,26 +392,26 @@ export async function leavePublicTable(userId: string, tableId: string) {
     throw new AppError(400, "INVALID_TABLE", "არასწორი მაგიდა.");
   }
 
+  ensureDefaultPublicTables();
+
   const table = publicTables.get(tableId);
   if (!table) {
-    // Already started/removed — still clear membership if any.
-    leaveCurrentTable(userId);
+    leaveWaitingTable(userId);
     return { ok: true as const };
   }
 
-  const members = tableMembers.get(tableId);
-  if (!members?.has(userId)) {
+  if (waitingTableByUser.get(userId) !== tableId) {
     return { ok: true as const };
   }
 
-  leaveCurrentTable(userId);
+  leaveWaitingTable(userId);
   notifyTablesUpdated(table.game);
   emitBroadcast("presence:updated", {});
   return { ok: true as const };
 }
 
 export function leavePublicTableIfAny(userId: string) {
-  const leftGame = leaveCurrentTable(userId);
+  const leftGame = leaveWaitingTable(userId);
   if (leftGame) notifyTablesUpdated(leftGame);
 }
 
@@ -339,7 +421,7 @@ export function registerUsersInGameRoom(input: {
   game: GameType;
   userIds: string[];
 }) {
-  rooms.set(input.roomId, {
+  liveRooms.set(input.roomId, {
     roomId: input.roomId,
     tableId: input.tableId,
     game: input.game,
@@ -347,7 +429,7 @@ export function registerUsersInGameRoom(input: {
   });
 
   for (const userId of input.userIds) {
-    leaveCurrentTable(userId);
+    leaveWaitingTable(userId);
     currentRoomByUser.set(userId, input.roomId);
   }
 }
@@ -359,30 +441,24 @@ export function getUsersInGameRoom(roomId: string): string[] {
 }
 
 /**
- * One player leaving dissolves the whole table:
+ * One player leaving dissolves the whole live match:
  * everyone is cleared from the room and notified.
+ * The public lobby table slot stays available for the next group.
  */
 export function leaveGameRoom(userId: string) {
   const roomId = currentRoomByUser.get(userId);
   if (!roomId) return { ok: true as const, dissolved: false as const };
 
-  const room = rooms.get(roomId);
+  const liveRoom = liveRooms.get(roomId);
   const memberIds = getUsersInGameRoom(roomId);
-  // Live room exists only after the match started — mid-game leave still owes ads.
   const hadLiveMatch = Boolean(getBuraLiveRoom(roomId));
 
   for (const memberId of memberIds) {
     currentRoomByUser.delete(memberId);
   }
 
-  if (room) {
-    tableMembers.delete(room.tableId);
-    publicTables.delete(room.tableId);
-    rooms.delete(roomId);
-    notifyTablesUpdated(room.game);
-  } else {
-    rooms.delete(roomId);
-  }
+  liveRooms.delete(roomId);
+  if (liveRoom) notifyTablesUpdated(liveRoom.game);
 
   destroyBuraLiveRoom(roomId);
   emitBroadcast("presence:updated", {});
@@ -402,30 +478,28 @@ export function leaveGameRoom(userId: string) {
  * "player left" notification so their statuses return to normal.
  */
 export function dissolveFinishedGameRoom(roomId: string) {
-  const room = rooms.get(roomId);
+  const liveRoom = liveRooms.get(roomId);
   const memberIds = getUsersInGameRoom(roomId);
 
   for (const memberId of memberIds) {
     currentRoomByUser.delete(memberId);
   }
 
-  if (room) {
-    tableMembers.delete(room.tableId);
-    publicTables.delete(room.tableId);
-    rooms.delete(roomId);
-    notifyTablesUpdated(room.game);
-  }
+  liveRooms.delete(roomId);
+  if (liveRoom) notifyTablesUpdated(liveRoom.game);
 
   destroyBuraLiveRoom(roomId);
   emitBroadcast("presence:updated", {});
 }
 
 export function isUserInPublicTable(userId: string) {
-  return currentRoomByUser.has(userId);
+  return waitingTableByUser.has(userId);
 }
 
 export function isUserInGame(userId: string) {
-  return currentRoomByUser.has(userId);
+  if (waitingTableByUser.has(userId)) return true;
+  const roomId = currentRoomByUser.get(userId);
+  return Boolean(roomId && getBuraLiveRoom(roomId));
 }
 
 export function getUserGameRoomId(userId: string) {
