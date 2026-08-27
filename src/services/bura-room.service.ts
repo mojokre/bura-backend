@@ -1,4 +1,5 @@
 import { AppError } from "../lib/errors.js";
+import { isSimBotUserId, simBotProfile } from "../lib/dev-bots.js";
 import { emitToUser } from "../realtime/gateway.js";
 import { getProfileIconUrl } from "./profile.service.js";
 import { supabaseAdmin } from "../lib/supabase.js";
@@ -13,6 +14,7 @@ import {
 } from "../game/bura/engine.js";
 import { autoPlayForSeat, declareBura, isBuraTrick, playCards, settleResolvedTrick } from "../game/bura/play.js";
 import type {
+  BuraDealState,
   BuraMatchState,
   Card,
   ColorChoice,
@@ -20,11 +22,16 @@ import type {
   RaiseLevel,
   SeatIndex,
 } from "../game/bura/types.js";
-import { teamOf } from "../game/bura/types.js";
+import { activeSeatsForMode, teamOf, nextSeat } from "../game/bura/types.js";
 
 const TURN_MS = 15_000;
-/** Reveal (1.5s) + gather + flip + fly animation on the client. */
-const SETTLE_MS = 3_200;
+/** Dev bot think/play delay (ms). */
+const BOT_STEP_MS = 550;
+/** Must exceed client collect (reveal ≥2s + gather/fly). */
+const SETTLE_MS = 4_500;
+/** Per dealt card — match mobile DEAL (~340ms fly + gap). */
+const DEAL_CARD_MS = 420;
+const DEAL_LOCK_MIN_MS = 400;
 /** Time to show round result before next deal (~3s + countdown). */
 const BETWEEN_DEALS_MS = 3_500;
 /** After match end: winner overlay + 3-2-1 countdown on clients, then free everyone. */
@@ -45,8 +52,12 @@ type LiveRoom = {
   turnDeadline: number | null;
   /** Epoch ms when next deal starts (status between). */
   nextDealAt: number | null;
+  /** Epoch ms until play/bots stay locked (client deal animation). */
+  dealLockedUntil: number | null;
   turnTimer: ReturnType<typeof setTimeout> | null;
+  botTimer: ReturnType<typeof setTimeout> | null;
   settleTimer: ReturnType<typeof setTimeout> | null;
+  dealLockTimer: ReturnType<typeof setTimeout> | null;
   finishTimer: ReturnType<typeof setTimeout> | null;
   leaderboardAwarded?: boolean;
   /** dealNumber for which we already emitted chat "ბურა". */
@@ -58,34 +69,205 @@ const rooms = new Map<string, LiveRoom>();
 async function resolvePlayers(
   userIds: string[],
 ): Promise<Array<{ userId: string; username: string; iconUrl: string }>> {
-  const { data, error } = await supabaseAdmin
-    .from("profiles")
-    .select("id, username, icon_path")
-    .in("id", userIds);
+  const realIds = userIds.filter((id) => !isSimBotUserId(id));
+  const out: Array<{ userId: string; username: string; iconUrl: string }> = [];
 
-  if (error || !data) {
-    throw new AppError(500, "PROFILE_LOAD_FAILED", "პროფილები ვერ ჩაიტვირთა.");
+  if (realIds.length > 0) {
+    const { data, error } = await supabaseAdmin
+      .from("profiles")
+      .select("id, username, icon_path")
+      .in("id", realIds);
+
+    if (error || !data) {
+      throw new AppError(500, "PROFILE_LOAD_FAILED", "პროფილები ვერ ჩაიტვირთა.");
+    }
+
+    const byId = new Map(
+      (
+        data as Array<{ id: string; username: string; icon_path?: string | null }>
+      ).map((row) => [row.id, row]),
+    );
+
+    for (const id of realIds) {
+      const row = byId.get(id);
+      if (!row) {
+        throw new AppError(404, "PROFILE_NOT_FOUND", "მოთამაშე ვერ მოიძებნა.");
+      }
+      out.push({
+        userId: row.id,
+        username: row.username,
+        iconUrl: await getProfileIconUrl(row.username, row.icon_path),
+      });
+    }
   }
 
-  const byId = new Map(
-    (
-      data as Array<{ id: string; username: string; icon_path?: string | null }>
-    ).map((row) => [row.id, row]),
-  );
-
-  const out = [];
+  const realById = new Map(out.map((p) => [p.userId, p]));
+  const merged = [];
+  let botIndex = 1;
   for (const id of userIds) {
-    const row = byId.get(id);
-    if (!row) {
+    if (isSimBotUserId(id)) {
+      merged.push(simBotProfile(id, botIndex++));
+      continue;
+    }
+    const profile = realById.get(id);
+    if (!profile) {
       throw new AppError(404, "PROFILE_NOT_FOUND", "მოთამაშე ვერ მოიძებნა.");
     }
-    out.push({
-      userId: row.id,
-      username: row.username,
-      iconUrl: await getProfileIconUrl(row.username, row.icon_path),
-    });
+    merged.push(profile);
   }
-  return out;
+  return merged;
+}
+
+function isBotSeat(room: LiveRoom, seat: SeatIndex): boolean {
+  const player = room.players.find((p) => p.seat === seat);
+  return player ? isSimBotUserId(player.userId) : false;
+}
+
+function clearBotTimer(room: LiveRoom) {
+  if (room.botTimer) {
+    clearTimeout(room.botTimer);
+    room.botTimer = null;
+  }
+}
+
+function roomHasSimBots(room: LiveRoom): boolean {
+  return room.players.some((p) => isSimBotUserId(p.userId));
+}
+
+/** Dev sim: auto-answer red/black when a bot is asked. */
+function advanceSimColorAsk(room: LiveRoom): boolean {
+  if (!roomHasSimBots(room)) return false;
+  const deal = room.match.deal;
+  if (room.match.status !== "color_ask" || !deal?.colorAsk || deal.colorAsk.answer) {
+    return false;
+  }
+  const seat = deal.colorAsk.askedSeat;
+  if (seat === null || seat === undefined) return false;
+  if (!isBotSeat(room, seat)) return false;
+
+  const answer: ColorChoice = Math.random() < 0.5 ? "red" : "black";
+  room.match = answerColorAsk(room.match, seat, answer);
+  return true;
+}
+
+/** Resolve first-deal color ask before sending state (bots answer sync). */
+function resolveSimColorAsk(room: LiveRoom) {
+  if (!roomHasSimBots(room)) return;
+  ensureColorAsk(room);
+  if (advanceSimColorAsk(room) && room.match.status === "playing") {
+    scheduleTurnTimer(room);
+  }
+}
+
+/** Schedule the next bot raise/play step without cancelling an pending bot timer. */
+function scheduleBotSimFollowUp(room: LiveRoom) {
+  if (!roomHasSimBots(room) || room.match.status === "finished") return;
+  const deal = room.match.deal;
+  if (!deal) return;
+
+  if (
+    room.match.status === "playing" &&
+    deal.pendingRaise &&
+    deal.pendingRaiseFrom !== null
+  ) {
+    const responder = nextSeat(deal.pendingRaiseFrom, room.match.config.mode);
+    if (!isBotSeat(room, responder) || room.botTimer) return;
+    room.botTimer = setTimeout(() => {
+      try {
+        room.match = respondRaise(room.match, responder, "accept");
+        if (room.match.status === "between") {
+          scheduleNextDealAfterBetween(room);
+        } else if (room.match.status === "playing" && !room.match.deal?.pendingRaise) {
+          scheduleTurnTimer(room);
+        }
+        broadcastRoom(room);
+      } catch {
+        // ignore bot raise failures
+      }
+    }, BOT_STEP_MS);
+    return;
+  }
+
+  if (
+    room.match.status === "playing" &&
+    !deal.pendingSettle &&
+    !deal.pendingRaise &&
+    !isDealLocked(room)
+  ) {
+    const seat = deal.turnSeat;
+    if (isBotSeat(room, seat) && !room.botTimer) {
+      maybeScheduleBotTurn(room);
+    }
+  }
+}
+
+function advanceBotSimStepSync(room: LiveRoom): boolean {
+  if (!roomHasSimBots(room)) return false;
+  ensureColorAsk(room);
+  if (room.match.status === "color_ask") {
+    return advanceSimColorAsk(room);
+  }
+
+  const deal = room.match.deal;
+  if (
+    room.match.status !== "playing" ||
+    !deal ||
+    deal.pendingSettle ||
+    deal.finished ||
+    isDealLocked(room)
+  ) {
+    return false;
+  }
+
+  if (deal.pendingRaise && deal.pendingRaiseFrom !== null) {
+    const responder = nextSeat(deal.pendingRaiseFrom, room.match.config.mode);
+    if (!isBotSeat(room, responder)) return false;
+    room.match = respondRaise(room.match, responder, "accept");
+    return true;
+  }
+
+  const seat = deal.turnSeat;
+  if (!isBotSeat(room, seat)) return false;
+  room.match = autoPlayForSeat(room.match, seat);
+  if (room.match.deal?.pendingSettle) {
+    scheduleSettle(room);
+  }
+  return true;
+}
+
+function runBotPlayTurn(room: LiveRoom, seat: SeatIndex) {
+  room.match = autoPlayForSeat(room.match, seat);
+  if (room.match.deal?.pendingSettle) {
+    broadcastRoom(room);
+    scheduleSettle(room);
+    return;
+  }
+  if (room.match.status === "playing") scheduleTurnTimer(room);
+  broadcastRoom(room);
+}
+
+function maybeScheduleBotTurn(room: LiveRoom) {
+  clearBotTimer(room);
+  const deal = room.match.deal;
+  if (
+    room.match.status !== "playing" ||
+    !deal ||
+    deal.pendingSettle ||
+    deal.pendingRaise ||
+    isDealLocked(room)
+  ) {
+    return;
+  }
+  const seat = deal.turnSeat;
+  if (!isBotSeat(room, seat)) return;
+
+  room.botTimer = setTimeout(() => {
+    try {
+      runBotPlayTurn(room, seat);
+    } catch {
+      // ignore bot play failures
+    }
+  }, BOT_STEP_MS);
 }
 
 function clearTurnTimer(room: LiveRoom) {
@@ -103,16 +285,88 @@ function clearSettleTimer(room: LiveRoom) {
   }
 }
 
+function clearDealLockTimer(room: LiveRoom) {
+  if (room.dealLockTimer) {
+    clearTimeout(room.dealLockTimer);
+    room.dealLockTimer = null;
+  }
+}
+
+function isDealLocked(room: LiveRoom): boolean {
+  return room.dealLockedUntil != null && Date.now() < room.dealLockedUntil;
+}
+
+function assertNotDealLocked(room: LiveRoom) {
+  if (isDealLocked(room)) {
+    throw new AppError(400, "DEAL_IN_PROGRESS", "კარტები ჯერ რიგდება.");
+  }
+}
+
+function dealLockMs(cardCount: number): number {
+  if (cardCount <= 0) return 0;
+  return Math.max(DEAL_LOCK_MIN_MS, cardCount * DEAL_CARD_MS);
+}
+
+function cardsDealtDelta(
+  before: BuraDealState | null | undefined,
+  after: BuraDealState | null | undefined,
+  mode: "1v1" | "2v2",
+): number {
+  if (!before || !after) return 0;
+  let n = 0;
+  for (const seat of activeSeatsForMode(mode)) {
+    n += Math.max(0, after.hands[seat].length - before.hands[seat].length);
+  }
+  return n;
+}
+
+function totalHandCards(deal: BuraDealState, mode: "1v1" | "2v2"): number {
+  let n = 0;
+  for (const seat of activeSeatsForMode(mode)) {
+    n += deal.hands[seat].length;
+  }
+  return n;
+}
+
+/** Hold play/bots until client deal flights finish, then start the turn. */
+function scheduleTurnAfterDeal(room: LiveRoom, cardsDealt: number) {
+  clearDealLockTimer(room);
+  clearTurnTimer(room);
+  clearBotTimer(room);
+  const ms = dealLockMs(cardsDealt);
+  if (ms <= 0) {
+    room.dealLockedUntil = null;
+    scheduleTurnTimer(room);
+    return;
+  }
+  room.dealLockedUntil = Date.now() + ms;
+  room.dealLockTimer = setTimeout(() => {
+    room.dealLockTimer = null;
+    room.dealLockedUntil = null;
+    if (room.match.status === "playing") {
+      scheduleTurnTimer(room);
+      broadcastRoom(room);
+    }
+  }, ms);
+}
+
 function scheduleNextDealAfterBetween(room: LiveRoom) {
   clearSettleTimer(room);
   clearTurnTimer(room);
+  clearDealLockTimer(room);
+  room.dealLockedUntil = null;
   room.nextDealAt = Date.now() + BETWEEN_DEALS_MS;
   room.settleTimer = setTimeout(() => {
     try {
       room.match = startDeal(room.match);
       room.settleTimer = null;
       room.nextDealAt = null;
-      if (room.match.status === "playing") scheduleTurnTimer(room);
+      if (room.match.status === "playing" && room.match.deal) {
+        scheduleTurnAfterDeal(
+          room,
+          totalHandCards(room.match.deal, room.match.config.mode),
+        );
+      }
       broadcastRoom(room);
     } catch {
       // ignore
@@ -126,8 +380,10 @@ function scheduleSettle(room: LiveRoom) {
 
   // Pause turn timer while cards fly to pile.
   clearTurnTimer(room);
+  clearBotTimer(room);
   room.settleTimer = setTimeout(() => {
     try {
+      const beforeDeal = room.match.deal;
       room.match = settleResolvedTrick(room.match);
       room.settleTimer = null;
       if (room.match.status === "between") {
@@ -137,7 +393,12 @@ function scheduleSettle(room: LiveRoom) {
       }
 
       if (room.match.status === "playing") {
-        scheduleTurnTimer(room);
+        const dealt = cardsDealtDelta(
+          beforeDeal,
+          room.match.deal,
+          room.match.config.mode,
+        );
+        scheduleTurnAfterDeal(room, dealt);
       }
       broadcastRoom(room);
     } catch {
@@ -152,6 +413,14 @@ function scheduleTurnTimer(room: LiveRoom) {
     return;
   }
   if (room.match.deal.pendingSettle) return;
+  if (isDealLocked(room)) return;
+
+  const seat = room.match.deal.turnSeat;
+  if (isBotSeat(room, seat)) {
+    maybeScheduleBotTurn(room);
+    return;
+  }
+
   room.turnDeadline = Date.now() + TURN_MS;
   room.turnTimer = setTimeout(() => {
     try {
@@ -210,6 +479,7 @@ function viewerPayload(room: LiveRoom, userId: string) {
     dealNumber: room.match.dealNumber,
     turnDeadline: room.turnDeadline,
     nextDealAt: room.nextDealAt,
+    dealLockedUntil: room.dealLockedUntil,
     mySeat: me.seat,
     config: {
       matchTo: room.match.config.matchTo,
@@ -244,6 +514,8 @@ function maybeScheduleMatchCleanup(room: LiveRoom) {
   if (room.match.status !== "finished" || room.finishTimer) return;
   clearTurnTimer(room);
   clearSettleTimer(room);
+  clearDealLockTimer(room);
+  room.dealLockedUntil = null;
 
   if (!room.leaderboardAwarded) {
     room.leaderboardAwarded = true;
@@ -252,8 +524,11 @@ function maybeScheduleMatchCleanup(room: LiveRoom) {
     const resolvedTeam = (score0 >= score1 ? 0 : 1) as 0 | 1;
     const winnerUserIds = room.players
       .filter((p) => teamOf(p.seat, room.match.config.mode) === resolvedTeam)
-      .map((p) => p.userId);
-    const allUserIds = room.players.map((p) => p.userId);
+      .map((p) => p.userId)
+      .filter((id) => !isSimBotUserId(id));
+    const allUserIds = room.players
+      .map((p) => p.userId)
+      .filter((id) => !isSimBotUserId(id));
     void import("./leaderboard.service.js")
       .then(({ awardMatchWin }) =>
         awardMatchWin({
@@ -312,9 +587,12 @@ function maybeAnnounceBura(room: LiveRoom) {
 function broadcastRoom(room: LiveRoom) {
   maybeAnnounceBura(room);
   maybeScheduleMatchCleanup(room);
+  resolveSimColorAsk(room);
   for (const player of room.players) {
+    if (isSimBotUserId(player.userId)) continue;
     emitToUser(player.userId, "bura:state", viewerPayload(room, player.userId));
   }
+  scheduleBotSimFollowUp(room);
 }
 
 export async function createBuraLiveRoom(input: {
@@ -376,13 +654,15 @@ export async function createBuraLiveRoom(input: {
     match,
     turnDeadline: null,
     nextDealAt: null,
+    dealLockedUntil: null,
     turnTimer: null,
+    botTimer: null,
     settleTimer: null,
+    dealLockTimer: null,
     finishTimer: null,
   };
   rooms.set(input.roomId, room);
 
-  if (match.status === "playing") scheduleTurnTimer(room);
   broadcastRoom(room);
   return room;
 }
@@ -394,6 +674,12 @@ export function getBuraLiveRoom(roomId: string) {
 export function getBuraRoomView(roomId: string, userId: string) {
   const room = rooms.get(roomId);
   if (!room) throw new AppError(404, "ROOM_NOT_FOUND", "ოთახი ვერ მოიძებნა.");
+  resolveSimColorAsk(room);
+  // HTTP fallback: advance a few bot steps per poll (timers + socket may be missed on mobile).
+  for (let i = 0; i < 8; i++) {
+    if (!advanceBotSimStepSync(room)) break;
+  }
+  scheduleBotSimFollowUp(room);
   return viewerPayload(room, userId);
 }
 
@@ -427,6 +713,7 @@ export function playBuraCards(roomId: string, userId: string, cardIds: string[])
   if (!room) throw new AppError(404, "ROOM_NOT_FOUND", "ოთახი ვერ მოიძებნა.");
   const player = room.players.find((p) => p.userId === userId);
   if (!player) throw new AppError(403, "FORBIDDEN", "ამ ოთახში არ ხარ.");
+  assertNotDealLocked(room);
 
   try {
     room.match = playCards(room.match, player.seat, cardIds);
@@ -452,6 +739,7 @@ export function declareBuraCards(roomId: string, userId: string) {
   if (!room) throw new AppError(404, "ROOM_NOT_FOUND", "ოთახი ვერ მოიძებნა.");
   const player = room.players.find((p) => p.userId === userId);
   if (!player) throw new AppError(403, "FORBIDDEN", "ამ ოთახში არ ხარ.");
+  assertNotDealLocked(room);
 
   try {
     room.match = declareBura(room.match, player.seat);
@@ -477,6 +765,7 @@ export function offerBuraRaise(
   if (!room) throw new AppError(404, "ROOM_NOT_FOUND", "ოთახი ვერ მოიძებნა.");
   const player = room.players.find((p) => p.userId === userId);
   if (!player) throw new AppError(403, "FORBIDDEN", "ამ ოთახში არ ხარ.");
+  assertNotDealLocked(room);
 
   try {
     room.match = offerRaise(room.match, player.seat, level);
@@ -531,7 +820,9 @@ export function destroyBuraLiveRoom(roomId: string) {
   const room = rooms.get(roomId);
   if (!room) return;
   clearTurnTimer(room);
+  clearBotTimer(room);
   clearSettleTimer(room);
+  clearDealLockTimer(room);
   if (room.finishTimer) {
     clearTimeout(room.finishTimer);
     room.finishTimer = null;

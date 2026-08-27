@@ -517,9 +517,7 @@ export function publicDealView(
     finished: deal.finished,
     winnerTeam: deal.winnerTeam,
     endReason: deal.endReason,
-    stockCount: trumpStillInStock
-      ? Math.max(0, deal.deckRemaining.length - 1)
-      : deal.deckRemaining.length,
+    stockCount: deal.deckRemaining.length,
     teamPoints: {
       0: sumCardPoints(deal.takenByTeam[0]),
       1: sumCardPoints(deal.takenByTeam[1]),
@@ -555,9 +553,10 @@ export function refillHandsAfterTrick(
   const startIdx = Math.max(0, active.indexOf(winnerSeat));
 
   /**
-   * Round-robin full rounds so hands stay equal.
-   * Stock includes the face-up trump as its last card — it will be dealt.
-   * Only active seats receive cards (1v1 = seats 0 and 2).
+   * Deal starting from the cutter, clockwise.
+   * Face-up trump is the last card in stock and must be dealt to someone.
+   * If stock is shorter than a full round, still deal remaining cards one-by-one
+   * (otherwise the trump can get stuck forever).
    */
   for (;;) {
     const needy: SeatIndex[] = [];
@@ -565,10 +564,10 @@ export function refillHandsAfterTrick(
       const seat = active[(startIdx + offset) % active.length]!;
       if (hands[seat].length < handSize) needy.push(seat);
     }
-    if (needy.length === 0) break;
-    if (stock.length < needy.length) break;
+    if (needy.length === 0 || stock.length === 0) break;
 
     for (const seat of needy) {
+      if (stock.length === 0) break;
       hands[seat].push(stock.shift()!);
     }
   }

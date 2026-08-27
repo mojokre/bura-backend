@@ -248,7 +248,7 @@ export async function createPasswordPrivateTable(hostId: string, body: unknown) 
     ...host,
     status: "accepted",
     isHost: true,
-    team: 0,
+    team: mode === "1v1" ? 0 : null,
   });
 
   const lobby: PrivateLobbyInternal = {
@@ -318,18 +318,11 @@ export async function joinPasswordPrivateTable(userId: string, body: unknown) {
   const user = await resolveUser(userId);
   leavePublicTableIfAny(userId);
 
-  const team: 0 | 1 =
-    lobby.mode === "1v1"
-      ? 1
-      : acceptedCount(lobby) % 2 === 0
-        ? 0
-        : 1;
-
   lobby.seats.set(userId, {
     ...user,
     status: "accepted",
     isHost: false,
-    team,
+    team: lobby.mode === "1v1" ? 1 : null,
   });
 
   privateLobbyByUser.set(userId, lobbyId);
@@ -398,7 +391,7 @@ export async function createFriendsTable(hostId: string, body: unknown) {
     ...host,
     status: "accepted",
     isHost: true,
-    team: 0,
+    team: mode === "1v1" ? 0 : null,
   });
   for (const friend of invited) {
     seats.set(friend.id, {

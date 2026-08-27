@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AppError } from "../lib/errors.js";
+import { makeSimBotIds } from "../lib/dev-bots.js";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { emitBroadcast, emitToUser } from "../realtime/gateway.js";
 import { getProfileIconUrl } from "./profile.service.js";
@@ -384,6 +385,62 @@ export async function joinPublicTable(userId: string, tableId: string) {
   notifyTablesUpdated(table.game, leftGame);
   emitBroadcast("presence:updated", {});
   return { roomId: liveRoomId, started };
+}
+
+/** Dev-only: start a 2v2 match with the caller + 3 sim bots. */
+export async function simulate2v2WithBots(userId: string, tableId: string) {
+  if (process.env.NODE_ENV === "production" && process.env.ENABLE_BOT_SIM !== "1") {
+    throw new AppError(403, "BOT_SIM_DISABLED", "ბოტ სიმულაცია გამორთულია.");
+  }
+
+  const parsed = joinParamsSchema.safeParse({ tableId });
+  if (!parsed.success) {
+    throw new AppError(400, "INVALID_TABLE", "არასწორი მაგიდა.");
+  }
+
+  ensureDefaultPublicTables();
+
+  const table = publicTables.get(tableId);
+  if (!table) {
+    throw new AppError(404, "TABLE_NOT_FOUND", "მაგიდა ვერ მოიძებნა.");
+  }
+  if (table.mode !== "2v2") {
+    throw new AppError(400, "NOT_2V2", "ბოტ სიმულაცია მხოლოდ 2v2-ზეა.");
+  }
+  if (table.game !== "bura") {
+    throw new AppError(400, "INVALID_GAME", "არასწორი თამაში.");
+  }
+
+  await resolveUser(userId);
+  assertNotInLiveGame(userId);
+  const leftGame = leaveWaitingTable(userId);
+
+  const botIds = makeSimBotIds(tableId);
+  const userIds = [userId, ...botIds];
+  const liveRoomId = `live_sim_${tableId}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+
+  await createBuraLiveRoom({
+    roomId: liveRoomId,
+    game: "bura",
+    userIds,
+    matchTo: table.matchTo,
+    malyutkaMode: table.malyutkaMode,
+    mode: "2v2",
+  });
+
+  liveRooms.set(liveRoomId, {
+    roomId: liveRoomId,
+    tableId,
+    game: table.game,
+    createdAt: Date.now(),
+  });
+
+  currentRoomByUser.set(userId, liveRoomId);
+  emitToUser(userId, "public-table:started", { roomId: liveRoomId, tableId });
+  notifyTablesUpdated(table.game, leftGame);
+  emitBroadcast("presence:updated", {});
+
+  return { roomId: liveRoomId, started: true as const };
 }
 
 export async function leavePublicTable(userId: string, tableId: string) {

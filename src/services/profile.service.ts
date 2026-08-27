@@ -119,14 +119,25 @@ const usernameSchema = z
     "მომხმარებლის სახელი შეიძლება შეიცავდეს მხოლოდ ლათინურ ასოებს, ციფრებს და _.",
   );
 
+const iconUrlCache = new Map<string, { url: string; expiresAt: number }>();
+
 async function resolveIconUrl(objectPath: string) {
+  const cached = iconUrlCache.get(objectPath);
+  if (cached && cached.expiresAt > Date.now()) return cached.url;
+
   // Works best when bucket is public; for private buckets we try signed URLs.
   try {
     const { data, error } = await supabaseAdmin.storage
       .from(env.SUPABASE_STORAGE_BUCKET)
       .createSignedUrl(objectPath, 60 * 60);
 
-    if (!error && data?.signedUrl) return data.signedUrl;
+    if (!error && data?.signedUrl) {
+      iconUrlCache.set(objectPath, {
+        url: data.signedUrl,
+        expiresAt: Date.now() + 50 * 60 * 1000,
+      });
+      return data.signedUrl;
+    }
   } catch {
     // ignore and fall back to publicUrl
   }
@@ -135,7 +146,14 @@ async function resolveIconUrl(objectPath: string) {
     .from(env.SUPABASE_STORAGE_BUCKET)
     .getPublicUrl(objectPath);
 
-  return data.publicUrl ?? null;
+  const publicUrl = data.publicUrl ?? null;
+  if (publicUrl) {
+    iconUrlCache.set(objectPath, {
+      url: publicUrl,
+      expiresAt: Date.now() + 50 * 60 * 1000,
+    });
+  }
+  return publicUrl;
 }
 
 export async function listSuggestedIcons() {

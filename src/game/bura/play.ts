@@ -411,10 +411,10 @@ export function declareBura(
 }
 
 /**
- * Timeout auto-play: legal + reasonably advantageous.
- * Lead: prefer longest same-suit that isn't pure trump waste; lowest ranks.
- * Follow: beat if possible with cheapest combo; else dump lowest points/rank.
- * If the seat holds ბურა, auto-declare instead of playing a card.
+ * Bot / timeout auto-play: legal + elementary tactics.
+ * Lead: same-suit 1–3 cards when dumping blanks is worth it; avoid wasteful trump.
+ * Follow: cheapest beat of საჭრელი, else cheapest dump.
+ * ბურა / მალიუტკა when the hand clearly allows it.
  */
 export function autoPlayForSeat(match: BuraMatchState, seat: SeatIndex): BuraMatchState {
   const deal = match.deal;
@@ -428,7 +428,7 @@ export function autoPlayForSeat(match: BuraMatchState, seat: SeatIndex): BuraMat
     try {
       return declareBura(match, seat);
     } catch {
-      // fall through to normal auto-play
+      // fall through
     }
   }
 
@@ -455,42 +455,88 @@ function pickAutoCards(
   const isLead = deal.currentTrick.length === 0;
 
   if (isLead) {
-    // Prefer longest non-trump suit; else longest trump; play lowest of that suit (1 or more? lead often 1 for safety when timeout).
-    // Advantageous: dump point-less multi only if all same suit — keep simple: lead 1 weakest non-trump if any.
-    const bySuit = new Map<Suit, Card[]>();
-    for (const card of hand) {
-      const list = bySuit.get(card.suit) ?? [];
-      list.push(card);
-      bySuit.set(card.suit, list);
+    // Clear მალიუტკა when we have it on lead.
+    if (isMalyutkaHand(hand, trump)) {
+      return [...hand];
     }
-    let bestSuit: Suit | null = null;
-    let bestScore = -Infinity;
-    for (const [suit, list] of bySuit) {
-      list.sort((a, b) => cardSortWeakFirst(a, b, trump));
-      const nonTrumpBonus = suit === trump ? 0 : 10;
-      const lowPoints = -list.reduce((s, c) => s + cardPointsOf(c), 0);
-      const score = nonTrumpBonus * 100 + list.length * 10 + lowPoints;
-      if (score > bestScore) {
-        bestScore = score;
-        bestSuit = suit;
-      }
-    }
-    if (!bestSuit) return [hand[0]!];
-    const suitCards = bySuit.get(bestSuit)!;
-    // Lead only 1 on timeout — safest and still legal
-    return [suitCards[0]!];
+    return pickLeadCards(hand, trump);
   }
 
+  return pickFollowCards(deal, hand, trump);
+}
+
+function pickLeadCards(hand: Card[], trump: Suit): Card[] {
+  const bySuit = new Map<Suit, Card[]>();
+  for (const card of hand) {
+    const list = bySuit.get(card.suit) ?? [];
+    list.push(card);
+    bySuit.set(card.suit, list);
+  }
+
+  type Option = { cards: Card[]; score: number };
+  const options: Option[] = [];
+
+  for (const [suit, raw] of bySuit) {
+    const weakFirst = [...raw].sort((a, b) => cardSortWeakFirst(a, b, trump));
+    const strongFirst = [...weakFirst].reverse();
+    const isTrumpSuit = suit === trump;
+    const maxK = Math.min(weakFirst.length, isTrumpSuit ? 2 : 3);
+
+    for (let k = 1; k <= maxK; k += 1) {
+      const cards = weakFirst.slice(0, k);
+      const pts = cards.reduce((s, c) => s + cardPointsOf(c), 0);
+      let score = 0;
+
+      // Prefer non-trump leads.
+      score += isTrumpSuit ? -30 : 35;
+      // Prefer dumping low / blank cards.
+      score -= pts * 4;
+      score -= cards.reduce((s, c) => s + rankValue(c.rank), 0);
+
+      // Multi-card lead when blanks (or near-blanks) — forces others to spend cards.
+      if (k >= 2 && pts === 0) score += 28 + k * 10;
+      else if (k >= 2 && pts <= 4) score += 14 + k * 4;
+      else if (k >= 2 && pts >= 14) score -= 18; // A+10 dump lead is usually bad
+
+      // Clearing the whole suit is tidy.
+      if (k === weakFirst.length && !isTrumpSuit && k >= 2) score += 12;
+
+      // Leading a lone high trump is last resort.
+      if (isTrumpSuit && k === 1 && pts >= 10) score -= 8;
+
+      options.push({ cards, score });
+    }
+
+    // Sometimes lead Ace (or 10) alone to try and take — not mixed with weak.
+    const top = strongFirst[0]!;
+    if (top.rank === "A" || top.rank === "10") {
+      let score = isTrumpSuit ? -5 : 32;
+      score += cardPointsOf(top); // want those points home if we win
+      if (top.rank === "A" && !isTrumpSuit) score += 6;
+      options.push({ cards: [top], score });
+    }
+  }
+
+  if (options.length === 0) return [hand[0]!];
+  options.sort((a, b) => b.score - a.score);
+  return options[0]!.cards;
+}
+
+function pickFollowCards(
+  deal: NonNullable<BuraMatchState["deal"]>,
+  hand: Card[],
+  trump: Suit,
+): Card[] | null {
   const need = deal.currentTrick[0]!.cards.length;
   if (hand.length < need) return null;
 
-  const target = (() => {
-    // Beat whoever is currently winning (საჭრელი), not only original lead.
-    const winSeat = winningPlaySeat(deal.currentTrick, trump);
-    const winPlay = deal.currentTrick.find((p) => p.seat === winSeat)!;
-    return winPlay.cards;
-  })();
+  const winSeat = winningPlaySeat(deal.currentTrick, trump);
+  const winPlay = deal.currentTrick.find((p) => p.seat === winSeat)!;
+  const target = winPlay.cards;
   const ledSuit = deal.currentTrick[0]!.cards[0]!.suit;
+  const trickPoints =
+    deal.currentTrick.reduce((s, p) => s + p.cards.reduce((t, c) => t + cardPointsOf(c), 0), 0) +
+    target.reduce((s, c) => s + cardPointsOf(c), 0) / 2;
 
   const combos = combinations(hand, need);
   let bestBeat: Card[] | null = null;
@@ -499,14 +545,17 @@ function pickAutoCards(
   let bestDumpCost = Infinity;
 
   for (const combo of combos) {
-    const cost =
-      combo.reduce((s, c) => s + cardPointsOf(c), 0) * 100 +
-      combo.reduce((s, c) => s + rankValue(c.rank), 0) +
-      combo.filter((c) => isTrump(c, trump)).length * 50;
+    const pts = combo.reduce((s, c) => s + cardPointsOf(c), 0);
+    const trumps = combo.filter((c) => isTrump(c, trump)).length;
+    const rankSum = combo.reduce((s, c) => s + rankValue(c.rank), 0);
+    // Prefer same-suit overtrump; penalize spending trump / high points.
+    const cost = pts * 100 + rankSum + trumps * 55;
 
     if (playBeatsLeadPlay(combo, target, trump, ledSuit)) {
-      if (cost < bestBeatCost) {
-        bestBeatCost = cost;
+      // Worth beating a bit more when the trick already has points.
+      const adjusted = cost - Math.min(40, trickPoints);
+      if (adjusted < bestBeatCost) {
+        bestBeatCost = adjusted;
         bestBeat = combo;
       }
     } else if (cost < bestDumpCost) {
@@ -518,7 +567,6 @@ function pickAutoCards(
   if (bestBeat) return bestBeat;
   if (bestDump) return bestDump;
 
-  // Fallback: weakest N cards (may mix suits — legal dump)
   return [...hand]
     .sort((a, b) => cardSortWeakFirst(a, b, trump))
     .slice(0, need);
@@ -529,7 +577,6 @@ function combinations<T>(items: T[], k: number): T[][] {
   if (k > items.length) return [];
   if (k === items.length) return [items.slice()];
   const out: T[][] = [];
-  // Keep search bounded for 5-choose-3 etc.
   function rec(start: number, acc: T[]) {
     if (acc.length === k) {
       out.push(acc.slice());

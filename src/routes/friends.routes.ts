@@ -16,8 +16,10 @@ export const friendsRouter = Router();
 friendsRouter.get("/", requireAuth, async (req, res) => {
   try {
     const userId = (req as any).userId as string;
-    const friends = await listFriends(userId);
-    const incomingRequests = await listIncomingFriendRequests(userId);
+    const [friends, incomingRequests] = await Promise.all([
+      listFriends(userId),
+      listIncomingFriendRequests(userId),
+    ]);
     return res.json({ friends, incomingRequests });
   } catch (error) {
     return handleError(res, error);

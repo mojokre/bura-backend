@@ -105,6 +105,19 @@ function isAllowedAppReturnTo(value: string) {
   }
 }
 
+function isHostedOAuthCallback(url: URL) {
+  try {
+    const site = new URL(env.FRONTEND_URL);
+    return (
+      url.protocol === "https:" &&
+      url.hostname === site.hostname &&
+      url.pathname.replace(/\/$/, "") === "/auth/callback"
+    );
+  } catch {
+    return false;
+  }
+}
+
 function resolveOAuthRedirect(requested?: string) {
   const configured = env.MOBILE_OAUTH_REDIRECT_URL.replace(/\/$/, "");
   if (!requested?.trim()) return configured;
@@ -112,12 +125,20 @@ function resolveOAuthRedirect(requested?: string) {
   try {
     const url = new URL(requested.trim());
     const base = `${url.origin}${url.pathname}`.replace(/\/$/, "");
+    const returnTo = url.searchParams.get("return_to");
+    const hasAppReturn = Boolean(returnTo && isAllowedAppReturnTo(returnTo));
+
+    // Mobile always sends the hosted callback + return_to; honor it even if env
+    // still has the legacy bura:// value (Supabase would fall back to Site URL).
+    if (isHostedOAuthCallback(url) && hasAppReturn) {
+      return url.toString();
+    }
+
     if (base !== configured) return configured;
 
-    const returnTo = url.searchParams.get("return_to");
-    if (returnTo && isAllowedAppReturnTo(returnTo)) {
+    if (hasAppReturn) {
       const next = new URL(configured);
-      next.searchParams.set("return_to", returnTo);
+      next.searchParams.set("return_to", returnTo!);
       return next.toString();
     }
   } catch {

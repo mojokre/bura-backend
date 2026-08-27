@@ -10,6 +10,7 @@ import {
   joinPublicTable,
   leaveGameRoom,
   leavePublicTable,
+  simulate2v2WithBots,
 } from "../services/tables.service.js";
 import { isUserInPrivateLobby } from "../services/friends-table.service.js";
 import { emitToUser } from "../realtime/gateway.js";
@@ -68,6 +69,49 @@ tablesRouter.post("/public/create", requireAuth, requireUsername, async (req, re
     });
   }
 });
+
+tablesRouter.post(
+  "/:tableId/simulate-bots",
+  requireAuth,
+  requireUsername,
+  async (req, res) => {
+    try {
+      const userId = (req as any).userId as string;
+      const { tableId } = req.params;
+
+      if (!tableId || Array.isArray(tableId)) {
+        return res.status(400).json({
+          code: "VALIDATION_ERROR",
+          message: "არასწორი tableId.",
+        });
+      }
+
+      if (isUserInPrivateLobby(userId)) {
+        return res.status(409).json({
+          code: "IN_PRIVATE_LOBBY",
+          message: "ჯერ დატოვე მეგობრების ლობი.",
+        });
+      }
+
+      const result = await simulate2v2WithBots(userId, tableId);
+      return res.json(result);
+    } catch (error) {
+      if (error instanceof AppError) {
+        return res.status(error.statusCode).json({
+          code: error.code,
+          message: error.message,
+        });
+      }
+
+      // eslint-disable-next-line no-console
+      console.error(error);
+      return res.status(500).json({
+        code: "INTERNAL_ERROR",
+        message: "სერვერის შეცდომა.",
+      });
+    }
+  },
+);
 
 tablesRouter.post("/:tableId/join", requireAuth, requireUsername, async (req, res) => {
   try {

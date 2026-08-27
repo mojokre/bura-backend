@@ -125,16 +125,24 @@ export async function fetchLeaderboard(limit = 50): Promise<LeaderboardEntry[]> 
 
   const out: LeaderboardEntry[] = [];
   let rank = 1;
-  for (const row of rows) {
-    const profile = byId.get(row.user_id);
-    if (!profile) continue;
+  const entries = await Promise.all(
+    rows.map(async (row) => {
+      const profile = byId.get(row.user_id);
+      if (!profile) return null;
+      return {
+        userId: row.user_id,
+        username: profile.username,
+        iconUrl: await getProfileIconUrl(profile.username, profile.icon_path),
+        points: row.points,
+        wins: row.wins,
+      };
+    }),
+  );
+  for (const entry of entries) {
+    if (!entry) continue;
     out.push({
       rank: rank++,
-      userId: row.user_id,
-      username: profile.username,
-      iconUrl: await getProfileIconUrl(profile.username, profile.icon_path),
-      points: row.points,
-      wins: row.wins,
+      ...entry,
     });
   }
   return out;
