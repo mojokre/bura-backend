@@ -45,6 +45,18 @@ export function initRealtime(httpServer: HttpServer) {
       markUserActive(userId);
     });
 
+    /** Client RTT probe — reply via ack so the UI can show signal strength. */
+    socket.on("net:ping", (payload: unknown, ack?: (res: { t: number }) => void) => {
+      markUserActive(userId);
+      const t =
+        payload &&
+        typeof payload === "object" &&
+        typeof (payload as { t?: unknown }).t === "number"
+          ? (payload as { t: number }).t
+          : Date.now();
+      if (typeof ack === "function") ack({ t });
+    });
+
     registerVoiceHandlers(socket, userId);
     registerChatHandlers(socket, userId);
 
